@@ -61,6 +61,34 @@ Panel Admin memaparkan **Baki dompet pengguna**. Nilai ini mesti sentiasa sama d
 > ⚠️ Menyimpan nilai tersimpan (stored value) untuk orang awam pada skala besar mungkin memerlukan kelulusan e-wang daripada Bank Negara Malaysia.
 > Untuk kegunaan komuniti kampus yang kecil, bincang dengan pihak universiti, tetapkan had baki (lalai RM5,000) dan dapatkan nasihat sebelum dilancarkan secara meluas.
 
+## Gambar
+
+| Di mana | Bilangan gambar |
+|---|---|
+| Produk / menu / servis kedai | sehingga 5 (galeri) |
+| Kereta sewa | sehingga 5 (galeri) |
+| Iklan (barang terpakai, bilik, kerja, event, hilang & jumpa) | sehingga 5 |
+| Ulasan & rating (kedai dan penjual) | sehingga 3 |
+| Gambar kedai, profil, resit tambah nilai, kod QR bank, bukti laporan masalah, chat | 1 setiap satu |
+
+Gambar dikecilkan pada peranti pengguna sebelum dimuat naik (maks 2MB), disimpan dalam `DATA_DIR/uploads`, dan hanya rujukan ke fail sendiri diterima. URL luar ditolak.
+
+## Database
+
+SQLite (terbina dalam Node), mod **WAL** dengan `synchronous=FULL`, dan *foreign key* diaktifkan.
+
+- **Peraturan perlindungan (trigger):**
+  - baki dompet tidak boleh negatif
+  - lejar transaksi tidak boleh diubah atau dipadam
+  - jumlah pesanan mesti sama dengan subjumlah + penghantaran + deposit
+  - rating mesti 1–5
+  - stok dan harga tidak boleh negatif
+
+  Peraturan ini dikuatkuasakan oleh database itu sendiri, bukan hanya oleh kod aplikasi.
+- **Semakan kesihatan semasa pelayan dimulakan:** `PRAGMA quick_check`, dan audit lejar yang memastikan baki setiap pengguna sama dengan jumlah transaksinya. Ia boleh dilihat di *Panel Admin › Sistem*.
+- **Sandaran automatik** setiap 24 jam ke `DATA_DIR/backups` menggunakan `VACUUM INTO`, jadi selamat walaupun aplikasi sedang berjalan. 14 salinan terakhir disimpan (boleh ditukar dengan `BACKUP_KEEP`). Admin boleh membuat sandaran dan memuat turunnya dari panel.
+- **Migrasi automatik:** database lama dinaik taraf tanpa kehilangan data.
+
 ## Jalankan
 
 Keperluan: **Node.js 22.13 atau lebih baharu**. Tiada `npm install` diperlukan kerana sistem ini tiada dependency luar.
@@ -80,6 +108,7 @@ Kali pertama dijalankan, akaun admin akan dicipta dan kata laluannya dipaparkan 
 | `ADMIN_PASSWORD` | rawak | Kata laluan admin pertama |
 | `DEMO` | `1` | `0` = jangan cipta kedai & akaun demo |
 | `COOKIE_SECURE` | – | Set `1` apabila dijalankan di belakang HTTPS |
+| `BACKUP_KEEP` | `14` | Bilangan fail sandaran database yang disimpan |
 
 Akaun demo (apabila `DEMO=1`): `pelajar@demo.upsi`, `nasilemak@demo.upsi`, `prebet@demo.upsi` dan `print@demo.upsi`. Kata laluan semuanya `demo1234`.
 
@@ -99,6 +128,7 @@ src/modules.js       modul one-stop centre: tempahan (trip, servis, sewa kereta)
 src/validate.js      pengesahan input bersama
 src/db.js            skema SQLite, tetapan lalai, data demo
 src/realtime.js      hab Server-Sent Events (chat/notifikasi masa nyata)
+src/backup.js        sandaran database harian
 src/security.js      hash kata laluan (scrypt), token, had kadar
 public/              aplikasi web (HTML/CSS/JS tanpa framework, ikon SVG sendiri)
 test/                ujian integrasi (teras + modul)

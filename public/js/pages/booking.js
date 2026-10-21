@@ -1,5 +1,5 @@
 // Booking dialogs for prebet trips, service slots and car rentals.
-import { state, api, esc, rm, icon, actions, forms, changes, inputs, openModal, closeOverlay, toast, hooks, ymd, addDays, fmtDay } from '../core.js';
+import { state, api, esc, rm, icon, actions, forms, changes, inputs, openModal, closeOverlay, toast, hooks, ymd, addDays, fmtDay, photoStrip } from '../core.js';
 
 // Pages put the shops/items/vehicles they render here so dialogs can open instantly.
 export const cache = { shops: {}, items: {}, vehicles: {} };
@@ -101,6 +101,7 @@ Object.assign(actions, {
             <div class="thumb" style="width:84px;height:64px">${v.image ? `<img src="${esc(v.image)}" alt="">` : '🚗'}</div>
             <div class="grow"><b>${esc(v.model)}</b><div class="xs muted">${esc(v.plate)} · ${v.seats} tempat duduk · ${v.transmission === 'AUTO' ? 'Auto' : 'Manual'}</div><div class="xs muted">${esc(shop.name)}</div></div>
           </div>
+          ${v.images.length > 1 ? photoStrip(v.images, 64) : ''}
           ${v.notes ? `<div class="alert info small">${icon('info')}<div>${esc(v.notes)}</div></div>` : ''}
           <div class="grid-2">
             <div class="field"><label>Tarikh ambil *</label><input class="input" type="date" name="start_date" required min="${ymd(new Date())}" value="${start}" data-change="rentalCalc"></div>

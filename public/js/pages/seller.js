@@ -1,6 +1,6 @@
 import {
   state, api, esc, rm, toSen, senToInput, icon, page, actions, forms, changes, onPage, refresh, openModal, closeOverlay,
-  toast, confirmDialog, emptyState, imageField, thumb, statusBadge, fmtDate, hooks
+  toast, confirmDialog, emptyState, imageField, imagesField, thumb, statusBadge, fmtDate, hooks
 } from '../core.js';
 import { orderCard } from './orders.js';
 
@@ -124,7 +124,7 @@ function menuTab(items) {
         <button class="btn btn-primary" data-act="itemModal">${icon('plus')} Tambah item</button></div>
       ${items.length ? `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Item</th><th>Jenis</th><th>Harga</th><th>Tersedia</th><th class="right">Tindakan</th></tr></thead><tbody>
         ${items.map((it) => `<tr>
-          <td style="width:60px">${thumb(it, 'sm')}</td>
+          <td style="width:60px;position:relative">${thumb(it, 'sm')}${it.images?.length > 1 ? `<span class="img-count">${it.images.length}</span>` : ''}</td>
           <td><div class="bold">${esc(it.title)}</div><div class="xs muted clamp-1">${esc(it.description || '')}</div></td>
           <td><span class="badge ${it.kind === 'PRODUCT' ? '' : 'blue'}">${ITEM_KINDS[it.kind] || 'Produk'}${it.kind === 'SERVICE' ? ` · ${it.duration_min} min` : ''}</span></td>
           <td class="price">${rm(it.price)}</td>
@@ -307,7 +307,7 @@ Object.assign(actions, {
           <div class="field ${it?.kind === 'SERVICE' ? '' : 'hidden'}" id="durField"><label>Tempoh setiap sesi (minit) *</label><input class="input" name="duration_min" type="number" min="15" max="480" step="15" value="${it?.duration_min || 60}"></div>
           <div class="field"><label id="priceLabel">${it?.kind === 'ROUTE' ? 'Harga seorang (RM) *' : 'Harga (RM) *'}</label><div class="input-prefix"><span>RM</span><input class="input" name="price" type="number" min="0.01" step="0.01" required value="${it ? senToInput(it.price) : ''}" placeholder="6.00"></div></div>
           <div class="field"><label>Penerangan ringkas</label><input class="input" name="description" maxlength="300" value="${esc(it?.description || '')}" placeholder="Cth: Termasuk sambal lebih & telur rebus"></div>
-          ${imageField('image', it?.image, 'Gambar item')}
+          ${imagesField('images', it?.images || (it?.image ? [it.image] : []), { max: 5, label: 'Gambar produk / servis' })}
           <label class="check"><input type="checkbox" name="available" ${!it || it.available ? 'checked' : ''}> Tersedia untuk dipesan</label>
         </form>`,
       foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="itemForm">Simpan item</button>`
@@ -349,7 +349,7 @@ Object.assign(forms, {
     refresh();
   },
   async saveItem(data, form) {
-    const payload = { title: data.title, price: toSen(data.price), description: data.description, image: data.image || null, available: data.available === 'on', kind: data.kind, duration_min: Number(data.duration_min) };
+    const payload = { title: data.title, price: toSen(data.price), description: data.description, images: JSON.parse(data.images || '[]'), available: data.available === 'on', kind: data.kind, duration_min: Number(data.duration_min) };
     const id = form.dataset.id;
     await api(id ? 'PATCH' : 'POST', id ? `/api/seller/items/${id}` : '/api/seller/items', payload);
     closeOverlay();
@@ -416,7 +416,7 @@ Object.assign(actions, {
             <div class="field"><label>Deposit (RM)</label><div class="input-prefix"><span>RM</span><input class="input" type="number" name="deposit" min="0" step="0.01" value="${v ? senToInput(v.deposit) : '50.00'}"></div></div>
           </div>
           <div class="field"><label>Syarat & nota</label><textarea class="input" name="notes" maxlength="500" rows="2" placeholder="Cth: Pulangkan dengan minyak penuh. Lesen P tidak dibenarkan.">${esc(v?.notes || '')}</textarea></div>
-          ${imageField('image', v?.image, 'Gambar kenderaan')}
+          ${imagesField('images', v?.images || (v?.image ? [v.image] : []), { max: 5, label: 'Gambar kenderaan', hint: 'Tunjuk luaran, dalaman & tempat duduk. Gambar pertama dijadikan gambar utama.' })}
           <label class="check"><input type="checkbox" name="active" ${!v || v.active ? 'checked' : ''}> Tersedia untuk disewa</label>
         </form>`,
       foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="vehicleForm">Simpan</button>`
@@ -434,7 +434,7 @@ changes.toggleVehicle = async (el) => {
 };
 forms.saveVehicle = async (d, form) => {
   const id = form.dataset.id;
-  const body = { model: d.model, plate: d.plate, seats: Number(d.seats), transmission: d.transmission, daily_rate: toSen(d.daily_rate), deposit: toSen(d.deposit || 0), notes: d.notes, image: d.image || null, active: d.active === 'on' };
+  const body = { model: d.model, plate: d.plate, seats: Number(d.seats), transmission: d.transmission, daily_rate: toSen(d.daily_rate), deposit: toSen(d.deposit || 0), notes: d.notes, images: JSON.parse(d.images || '[]'), active: d.active === 'on' };
   await api(id ? 'PATCH' : 'POST', id ? `/api/seller/vehicles/${id}` : '/api/seller/vehicles', body);
   closeOverlay();
   toast('Kenderaan disimpan.', 'success');

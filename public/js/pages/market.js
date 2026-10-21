@@ -1,6 +1,6 @@
 import {
   state, api, esc, rm, icon, page, actions, forms, changes, inputs, cover, thumb, stars, avatar, campusName, emptyState,
-  saveCart, cartCount, cartTotal, openModal, closeOverlay, toast, confirmDialog, timeAgo, catEmoji, hooks
+  saveCart, cartCount, cartTotal, openModal, closeOverlay, toast, confirmDialog, timeAgo, catEmoji, hooks, photoStrip
 } from '../core.js';
 import { shopCard, listingCard } from './cards.js';
 import { remember } from './booking.js';
@@ -219,6 +219,7 @@ page('/shop/:id', async ({ id }) => {
                 <div class="between"><div class="row">${avatar({ name: r.name }, 'sm')}<b class="small">${esc(r.name)}</b></div><span class="xs faint">${timeAgo(r.created_at)}</span></div>
                 <div style="margin:6px 0 2px">${stars(r.rating)}</div>
                 ${r.comment ? `<p class="small muted">${esc(r.comment)}</p>` : ''}
+                ${photoStrip(r.images)}
               </div>`).join('') : `<p class="small faint" style="padding:16px 0">Jadilah yang pertama memberi ulasan selepas pesanan anda selesai.</p>`}
           </div>
         </section>
@@ -229,10 +230,16 @@ page('/shop/:id', async ({ id }) => {
 
 let currentShop = null;
 
+// Item photo; with several photos it opens a gallery and shows the count.
+function itemThumb(it) {
+  if (!it.images?.length) return thumb(it);
+  return `<button type="button" class="thumb thumb-btn" data-act="gallery" data-images='${esc(JSON.stringify(it.images))}' data-index="0"><img src="${esc(it.images[0])}" alt="" loading="lazy">${it.images.length > 1 ? `<span class="img-count">${it.images.length}</span>` : ''}</button>`;
+}
+
 export function vehicleCard(v, mine = false) {
   return `
     <div class="card vehicle-card">
-      <div class="cover" style="height:140px">${v.image ? `<img src="${esc(v.image)}" alt="" loading="lazy">` : '<div class="cover-art c1">🚗</div>'}<span class="badge b-right">${v.seats} tempat duduk</span></div>
+      <div class="cover" style="height:140px" ${v.images?.length ? `data-act="gallery" data-images='${esc(JSON.stringify(v.images))}' data-index="0"` : ''}>${v.image ? `<img src="${esc(v.image)}" alt="" loading="lazy">` : '<div class="cover-art c1">🚗</div>'}<span class="badge b-right">${v.seats} tempat duduk</span>${v.images?.length > 1 ? `<span class="badge b-left">${icon('image')} ${v.images.length}</span>` : ''}</div>
       <div class="body stack-sm" style="padding:14px">
         <div class="between"><b>${esc(v.model)}</b><span class="price">${rm(v.daily_rate)}<span class="xs faint">/hari</span></span></div>
         <div class="xs muted">${v.transmission === 'AUTO' ? 'Auto' : 'Manual'} · Deposit ${rm(v.deposit)}${v.shop_name ? ` · ${esc(v.shop_name)}` : ''}</div>
@@ -247,7 +254,7 @@ function menuRow(it, shop, qty, mine) {
     const can = !mine && it.available && shop.status === 'APPROVED';
     return `
       <div class="menu-item ${it.available ? '' : 'off'}">
-        ${thumb(it)}
+        ${itemThumb(it)}
         <div class="grow">
           <div class="bold">${esc(it.title)}</div>
           ${it.description ? `<div class="small muted clamp-2">${esc(it.description)}</div>` : ''}
@@ -259,7 +266,7 @@ function menuRow(it, shop, qty, mine) {
   const canOrder = !mine && shop.is_open && it.available && shop.status === 'APPROVED';
   return `
     <div class="menu-item ${it.available ? '' : 'off'}">
-      ${thumb(it)}
+      ${itemThumb(it)}
       <div class="grow">
         <div class="bold">${esc(it.title)}</div>
         ${it.description ? `<div class="small muted clamp-2">${esc(it.description)}</div>` : ''}

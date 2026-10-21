@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS items (
   available INTEGER NOT NULL DEFAULT 1,
   kind TEXT NOT NULL DEFAULT 'PRODUCT',
   duration_min INTEGER,
+  images TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS orders (
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS reviews (
   user_id INTEGER NOT NULL REFERENCES users(id),
   rating INTEGER NOT NULL,
   comment TEXT NOT NULL DEFAULT '',
+  images TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS seller_reviews (
@@ -115,6 +117,7 @@ CREATE TABLE IF NOT EXISTS seller_reviews (
   user_id INTEGER NOT NULL REFERENCES users(id),
   rating INTEGER NOT NULL,
   comment TEXT NOT NULL DEFAULT '',
+  images TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS transactions (
@@ -214,6 +217,7 @@ CREATE TABLE IF NOT EXISTS vehicles (
   daily_rate INTEGER NOT NULL,
   deposit INTEGER NOT NULL DEFAULT 0,
   notes TEXT NOT NULL DEFAULT '',
+  images TEXT NOT NULL DEFAULT '[]',
   active INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL
 );
@@ -262,6 +266,33 @@ CREATE INDEX IF NOT EXISTS idx_listings_user ON listings(user_id);
 CREATE INDEX IF NOT EXISTS idx_vehicles_shop ON vehicles(shop_id);
 `;
 
+// Safety rules enforced by the database itself, so a bug in application code
+// can never corrupt money or ratings.
+const GUARD_TRIGGERS = `
+CREATE TRIGGER IF NOT EXISTS trg_balance_nonneg BEFORE UPDATE OF balance ON users
+  WHEN NEW.balance < 0 BEGIN SELECT RAISE(ABORT, 'Baki dompet tidak boleh negatif'); END;
+CREATE TRIGGER IF NOT EXISTS trg_balance_insert BEFORE INSERT ON users
+  WHEN NEW.balance < 0 BEGIN SELECT RAISE(ABORT, 'Baki dompet tidak boleh negatif'); END;
+CREATE TRIGGER IF NOT EXISTS trg_ledger_no_update BEFORE UPDATE ON transactions
+  BEGIN SELECT RAISE(ABORT, 'Lejar transaksi tidak boleh diubah'); END;
+CREATE TRIGGER IF NOT EXISTS trg_ledger_no_delete BEFORE DELETE ON transactions
+  BEGIN SELECT RAISE(ABORT, 'Lejar transaksi tidak boleh dipadam'); END;
+CREATE TRIGGER IF NOT EXISTS trg_order_total_ins BEFORE INSERT ON orders
+  WHEN NEW.total != NEW.subtotal + NEW.delivery_fee + NEW.deposit OR NEW.total < 0 OR NEW.commission < 0
+  BEGIN SELECT RAISE(ABORT, 'Jumlah pesanan tidak konsisten'); END;
+CREATE TRIGGER IF NOT EXISTS trg_order_total_upd BEFORE UPDATE OF total, subtotal, delivery_fee, deposit, commission ON orders
+  WHEN NEW.total != NEW.subtotal + NEW.delivery_fee + NEW.deposit OR NEW.total < 0 OR NEW.commission < 0
+  BEGIN SELECT RAISE(ABORT, 'Jumlah pesanan tidak konsisten'); END;
+CREATE TRIGGER IF NOT EXISTS trg_review_range BEFORE INSERT ON reviews
+  WHEN NEW.rating NOT BETWEEN 1 AND 5 BEGIN SELECT RAISE(ABORT, 'Rating mesti 1-5'); END;
+CREATE TRIGGER IF NOT EXISTS trg_seller_review_range BEFORE INSERT ON seller_reviews
+  WHEN NEW.rating NOT BETWEEN 1 AND 5 BEGIN SELECT RAISE(ABORT, 'Rating mesti 1-5'); END;
+CREATE TRIGGER IF NOT EXISTS trg_listing_stock BEFORE UPDATE OF stock ON listings
+  WHEN NEW.stock < 0 BEGIN SELECT RAISE(ABORT, 'Stok tidak boleh negatif'); END;
+CREATE TRIGGER IF NOT EXISTS trg_item_price BEFORE UPDATE OF price ON items
+  WHEN NEW.price < 1 BEGIN SELECT RAISE(ABORT, 'Harga tidak sah'); END;
+`;
+
 export const DEFAULT_CATEGORIES = {
   shop: [
     ['Makanan & Minuman', '🍱'], ['Prebet & Transport', '🚗'], ['Servis Runner', '⚡'], ['Servis Lain', '🛠️'],
@@ -305,6 +336,13 @@ function migrate(db) {
     db.exec("ALTER TABLE items ADD COLUMN kind TEXT NOT NULL DEFAULT 'PRODUCT'; ALTER TABLE items ADD COLUMN duration_min INTEGER;");
   }
   if (!colsOf('shops').includes('booking_hours')) db.exec('ALTER TABLE shops ADD COLUMN booking_hours TEXT;');
+  // Photo galleries: products & vehicles keep `image` as the cover, `images` holds all of them.
+  for (const t of ['items', 'vehicles', 'reviews', 'seller_reviews']) {
+    if (!colsOf(t).includes('images')) {
+      db.exec(`ALTER TABLE ${t} ADD COLUMN images TEXT NOT NULL DEFAULT '[]';`);
+      if (t === 'items' || t === 'vehicles') db.exec(`UPDATE ${t} SET images = json_array(image) WHERE image IS NOT NULL;`);
+    }
+  }
   if (!colsOf('orders').includes('seller_id')) {
     // Orders used to always belong to a shop. Rebuild so a seller can also be an
     // individual (second-hand listings) and bookings can carry dates/locations.
@@ -330,6 +368,7 @@ function migrate(db) {
     db.exec('PRAGMA foreign_keys = ON;');
   }
   db.exec(POST_MIGRATION_INDEXES);
+  db.exec(GUARD_TRIGGERS);
   if (db.prepare('SELECT COUNT(*) AS n FROM categories').get().n === 0) {
     const ins = db.prepare('INSERT INTO categories (kind, name, emoji, sort) VALUES (?, ?, ?, ?)');
     for (const [kind, list] of Object.entries(DEFAULT_CATEGORIES)) list.forEach(([name, emoji], i) => ins.run(kind, name, emoji, i));
@@ -338,7 +377,8 @@ function migrate(db) {
 
 export function openDb(file) {
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  // WAL for concurrent reads; synchronous=FULL so a committed payment survives a power cut.
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
   migrate(db);
 
@@ -370,6 +410,15 @@ export function openDb(file) {
     getSetting(key) {
       const row = q.one('SELECT value FROM settings WHERE key = ?', key);
       return row ? JSON.parse(row.value) : DEFAULT_SETTINGS[key];
+    },
+    // Quick structural check of the database file.
+    integrity: () => db.prepare('PRAGMA quick_check').all().map((r) => Object.values(r)[0]),
+    // Every wallet balance must equal the sum of its ledger entries.
+    ledgerMismatches: () => db.prepare(`SELECT u.id, u.name, u.balance, COALESCE(SUM(t.amount), 0) AS ledger FROM users u
+                                        LEFT JOIN transactions t ON t.user_id = u.id GROUP BY u.id HAVING u.balance != ledger`).all(),
+    // Consistent online copy of the whole database (safe while the app is running).
+    backupTo(file) {
+      db.exec(`VACUUM INTO '${String(file).replace(/'/g, "''")}'`);
     },
     setSetting(key, value) {
       q.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, JSON.stringify(value));

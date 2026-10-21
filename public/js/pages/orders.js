@@ -1,4 +1,4 @@
-import { state, api, esc, rm, icon, page, actions, forms, onPage, refresh, statusBadge, emptyState, fmtDateTime, fmtDay, fmtTime, fmtDate, timeAgo, openModal, closeOverlay, confirmDialog, toast, hooks, imageField, ORDER_KINDS, isBooking } from '../core.js';
+import { state, api, esc, rm, icon, page, actions, forms, onPage, refresh, statusBadge, emptyState, fmtDateTime, fmtDay, fmtTime, fmtDate, timeAgo, openModal, closeOverlay, confirmDialog, toast, hooks, imageField, imagesField, photoStrip, ORDER_KINDS, isBooking } from '../core.js';
 
 const kindOf = (o) => ORDER_KINDS[o.kind] || ORDER_KINDS.ORDER;
 // Short schedule text for bookings, e.g. "Sab 25 Okt, 09:00" or "25 Okt – 27 Okt (2 hari)".
@@ -161,7 +161,7 @@ page('/orders/:id', async ({ id }) => {
       </section>
 
       ${o.dispute ? disputeCard(o, role) : ''}
-      ${o.review ? `<section class="card pad stack-sm"><h2 class="section-title">Ulasan</h2><div class="stars">${Array.from({ length: 5 }, (_, i) => icon('star', i < o.review.rating ? '' : 'off')).join('')}</div>${o.review.comment ? `<p class="muted small">${esc(o.review.comment)}</p>` : ''}</section>` : ''}
+      ${o.review ? `<section class="card pad stack-sm"><h2 class="section-title">Ulasan</h2><div class="stars">${Array.from({ length: 5 }, (_, i) => icon('star', i < o.review.rating ? '' : 'off')).join('')}</div>${o.review.comment ? `<p class="muted small">${esc(o.review.comment)}</p>` : ''}${photoStrip(o.review.images, 72)}</section>` : ''}
     </div>`;
 }, { auth: true });
 
@@ -202,6 +202,7 @@ Object.assign(actions, {
           <div class="star-input" id="starInput">${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-act="pickStar" data-n="${n}" class="${n <= 5 ? 'on' : ''}" aria-label="${n} bintang">${icon('star')}</button>`).join('')}</div>
           <input type="hidden" name="rating" value="5">
           <div class="field"><label>Ulasan (pilihan)</label><textarea class="input" name="comment" maxlength="500" placeholder="Makanan sedap, penghantaran pantas…"></textarea></div>
+          ${imagesField('images', [], { max: 3, label: 'Gambar (pilihan)', hint: 'Kongsi gambar barang, makanan atau kereta yang anda terima.' })}
         </form>`,
       foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="reviewForm">Hantar ulasan</button>`
     });
@@ -235,7 +236,7 @@ forms.returnRental = async (data, form) => {
   refresh();
 };
 forms.review = async (data, form) => {
-  await api('POST', `/api/orders/${form.dataset.id}/review`, { rating: Number(data.rating), comment: data.comment });
+  await api('POST', `/api/orders/${form.dataset.id}/review`, { rating: Number(data.rating), comment: data.comment, images: JSON.parse(data.images || '[]') });
   closeOverlay();
   toast('Terima kasih atas ulasan anda!', 'success');
   refresh();

@@ -1,7 +1,7 @@
 // Student listings: second-hand goods, rooms, part-time jobs, events and lost & found.
 import {
   state, api, esc, rm, toSen, senToInput, icon, page, actions, forms, changes, inputs, refresh, openModal, closeOverlay, toast,
-  confirmDialog, emptyState, avatar, statusBadge, fmtDate, fmtDateTime, timeAgo, uploadImage, catEmoji, hooks, ymd, stars
+  confirmDialog, emptyState, avatar, statusBadge, fmtDate, fmtDateTime, timeAgo, catEmoji, hooks, ymd, stars, imagesField, photoStrip
 } from '../core.js';
 import { listingCard, listingPrice, listingSubtitle } from './cards.js';
 import { orderCard } from './orders.js';
@@ -133,7 +133,7 @@ page('/listing/:id', async ({ id }) => {
       ${l.status === 'REMOVED' ? `<div class="alert danger">${icon('ban')}<div><b>Iklan ini dipadam oleh admin.</b> ${esc(l.removed_reason || '')}</div></div>` : ''}
       <div class="listing-layout">
         <section class="card gallery">
-          <div class="gallery-main" id="galleryMain">${imgs[0] ? `<img src="${esc(imgs[0])}" alt="" data-act="zoom" data-src="${esc(imgs[0])}">` : `<div class="cover-art c1" style="height:100%">${l.kind === 'ITEM' ? catEmoji(l.category) : { ROOM: '🏠', JOB: '💼', EVENT: '🎟️', LOST: '🔎' }[l.kind]}</div>`}</div>
+          <div class="gallery-main" id="galleryMain">${imgs[0] ? `<img src="${esc(imgs[0])}" alt="" data-act="gallery" data-images='${esc(JSON.stringify(imgs))}' data-index="0">` : `<div class="cover-art c1" style="height:100%">${l.kind === 'ITEM' ? catEmoji(l.category) : { ROOM: '🏠', JOB: '💼', EVENT: '🎟️', LOST: '🔎' }[l.kind]}</div>`}</div>
           ${imgs.length > 1 ? `<div class="gallery-thumbs">${imgs.map((src, i) => `<button class="thumb ${i ? '' : 'on'}" data-act="galleryPick" data-src="${esc(src)}"><img src="${esc(src)}" alt=""></button>`).join('')}</div>` : ''}
         </section>
         <section class="stack">
@@ -167,7 +167,8 @@ page('/listing/:id', async ({ id }) => {
 
 Object.assign(actions, {
   galleryPick(el) {
-    document.getElementById('galleryMain').innerHTML = `<img src="${esc(el.dataset.src)}" alt="" data-act="zoom" data-src="${esc(el.dataset.src)}">`;
+    const all = [...document.querySelectorAll('.gallery-thumbs .thumb')].map((b) => b.dataset.src);
+    document.getElementById('galleryMain').innerHTML = `<img src="${esc(el.dataset.src)}" alt="" data-act="gallery" data-images='${esc(JSON.stringify(all))}' data-index="${all.indexOf(el.dataset.src)}">`;
     document.querySelectorAll('.gallery-thumbs .thumb').forEach((b) => b.classList.toggle('on', b === el));
   },
   async chatListing(el) {
@@ -244,31 +245,6 @@ Object.assign(forms, {
 // =====================================================================
 // POST / EDIT
 // =====================================================================
-function imagesField(values) {
-  return `
-    <div class="field"><label>Gambar (maks 5)</label>
-      <div class="multi-images" id="multiImages">
-        ${values.map((src) => `<div class="thumb"><img src="${esc(src)}" alt=""><button type="button" class="thumb-x" data-act="removeImg" data-src="${esc(src)}" aria-label="Buang">${icon('x')}</button></div>`).join('')}
-        ${values.length < 5 ? `<label class="thumb thumb-add">${icon('plus')}<input type="file" accept="image/*" multiple hidden data-change="pickImages"></label>` : ''}
-      </div>
-      <input type="hidden" name="images" value="${esc(JSON.stringify(values))}">
-      <span class="hint">Gambar pertama dijadikan gambar utama.</span>
-    </div>`;
-}
-const imgInput = () => document.querySelector('input[name=images]');
-function redrawImages(list) { document.getElementById('multiImages').closest('.field').outerHTML = imagesField(list); }
-changes.pickImages = async (el) => {
-  const list = JSON.parse(imgInput().value);
-  const files = [...el.files].slice(0, 5 - list.length);
-  el.closest('.thumb-add').innerHTML = '<span class="spinner"></span>';
-  try {
-    for (const f of files) list.push(await uploadImage(f));
-  } finally {
-    redrawImages(list);
-  }
-};
-actions.removeImg = (el) => redrawImages(JSON.parse(imgInput().value).filter((s) => s !== el.dataset.src));
-
 function kindFields(kind, l) {
   const m = l?.meta || {};
   const c = state.config;
@@ -336,7 +312,7 @@ function postForm(kind, l = null) {
           <div class="field"><label>Kampus / kawasan *</label><select class="input" name="campus">${opts(c.campuses, l?.campus || state.me.campus)}</select></div>
           <div class="field"><label>Lokasi${kind === 'ROOM' ? ' *' : ''}</label><input class="input" name="location" maxlength="120" ${kind === 'ROOM' ? 'required' : ''} value="${esc(l?.location || '')}" placeholder="Cth: Kolej Za'ba / Taman Bernam Jaya"></div>
         </div>
-        ${imagesField(l?.images || [])}
+        ${imagesField('images', l?.images || [], { max: 5, label: 'Gambar' })}
         <div class="row"><a class="btn btn-ghost" href="${l ? `#/listing/${l.id}` : '#/'}">Batal</a><button class="btn btn-primary grow" type="submit">${icon('check')} ${l ? 'Simpan perubahan' : 'Siarkan iklan'}</button></div>
       </form>
     </div>`;
@@ -432,6 +408,7 @@ page('/u/:id', async ({ id }) => {
                 <div style="margin:6px 0 2px">${stars(r.rating)}</div>
                 ${r.title ? `<div class="xs faint">Membeli: ${esc(r.title)}</div>` : ''}
                 ${r.comment ? `<p class="small muted">${esc(r.comment)}</p>` : ''}
+                ${photoStrip(r.images)}
               </div>`).join('') : '<p class="small faint" style="padding:16px 0">Ulasan muncul selepas pembeli menyelesaikan pembelian.</p>'}
           </div>
         </section>

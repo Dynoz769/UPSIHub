@@ -1,9 +1,9 @@
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, existsSync, createReadStream } from 'node:fs';
 import path from 'node:path';
 import { hashPassword, verifyPassword, randomToken, rateLimit } from './security.js';
 import { subscribe, push, isOnline } from './realtime.js';
 import { DEFAULT_SETTINGS } from './db.js';
-import { HttpError, fail, text, sen, oneOf, uploadRef, rm, myDate, MY_OFFSET } from './validate.js';
+import { HttpError, fail, text, sen, oneOf, uploadRef, uploadList, rm, myDate, MY_OFFSET } from './validate.js';
 import { registerModules, LISTING_KINDS, LISTING_META } from './modules.js';
 
 export const CAMPUSES = {
@@ -25,7 +25,7 @@ export const DISPUTE_REASONS = {
 
 export { HttpError };
 
-export function createApi({ db, uploadsDir, demo }) {
+export function createApi({ db, uploadsDir, demo, backups }) {
   const routes = [];
   const route = (method, pattern, handler) => {
     const keys = [];
@@ -65,6 +65,9 @@ export function createApi({ db, uploadsDir, demo }) {
   const admins = () => db.all("SELECT id FROM users WHERE role = 'admin' AND status = 'active'").map((r) => r.id);
   const notifyAdmins = (title, body, link) => admins().forEach((id) => notify(id, title, body, link));
 
+  // Rows store photo lists as JSON text; expose them as arrays.
+  const withImages = (row) => row && { ...row, images: JSON.parse(row.images || '[]') };
+
   const cats = (kind) => db.all('SELECT name FROM categories WHERE kind = ? AND active = 1 ORDER BY sort, id', kind).map((r) => r.name);
   const catEmoji = () => Object.fromEntries(db.all('SELECT name, emoji FROM categories').map((r) => [r.name, r.emoji]));
 
@@ -98,8 +101,8 @@ export function createApi({ db, uploadsDir, demo }) {
       items: db.all('SELECT item_id, title, price, qty FROM order_items WHERE order_id = ?', o.id),
       events: db.all('SELECT status, at FROM order_events WHERE order_id = ? ORDER BY id', o.id),
       dispute: db.one('SELECT * FROM disputes WHERE order_id = ?', o.id) || null,
-      review: db.one('SELECT rating, comment, created_at FROM reviews WHERE order_id = ?', o.id)
-        || db.one('SELECT rating, comment, created_at FROM seller_reviews WHERE order_id = ?', o.id) || null
+      review: withImages(db.one('SELECT rating, comment, images, created_at FROM reviews WHERE order_id = ?', o.id)
+        || db.one('SELECT rating, comment, images, created_at FROM seller_reviews WHERE order_id = ?', o.id)) || null
     };
   }
 
@@ -291,11 +294,11 @@ export function createApi({ db, uploadsDir, demo }) {
         owner: { ...owner, online: isOnline(owner.id) },
         orders: db.one("SELECT COUNT(*) AS n FROM orders WHERE shop_id = ? AND status = 'COMPLETED'", s.id).n
       }),
-      items: db.all('SELECT id, title, description, price, image, available, kind, duration_min FROM items WHERE shop_id = ? ORDER BY available DESC, id', s.id),
-      vehicles: db.all('SELECT id, model, plate, seats, transmission, image, daily_rate, deposit, notes FROM vehicles WHERE shop_id = ? AND active = 1 ORDER BY daily_rate', s.id),
+      items: db.all('SELECT id, title, description, price, image, images, available, kind, duration_min FROM items WHERE shop_id = ? ORDER BY available DESC, id', s.id).map(withImages),
+      vehicles: db.all('SELECT id, model, plate, seats, transmission, image, images, daily_rate, deposit, notes FROM vehicles WHERE shop_id = ? AND active = 1 ORDER BY daily_rate', s.id).map(withImages),
       booking_hours: s.booking_hours ? JSON.parse(s.booking_hours) : null,
-      reviews: db.all(`SELECT r.rating, r.comment, r.created_at, u.name FROM reviews r JOIN users u ON u.id = r.user_id
-                       WHERE r.shop_id = ? ORDER BY r.created_at DESC LIMIT 30`, s.id)
+      reviews: db.all(`SELECT r.rating, r.comment, r.images, r.created_at, u.name FROM reviews r JOIN users u ON u.id = r.user_id
+                       WHERE r.shop_id = ? ORDER BY r.created_at DESC LIMIT 30`, s.id).map(withImages)
     };
   });
 
@@ -504,9 +507,10 @@ export function createApi({ db, uploadsDir, demo }) {
     }
     const rating = sen(body.rating, 'Penilaian', { min: 1, max: 5 });
     const comment = text(body.comment, 'Ulasan', { max: 500, optional: true });
+    const images = JSON.stringify(uploadList(body.images, 3));
     // Shop orders rate the shop; student-to-student orders rate the seller personally.
-    if (o.shop_id) db.run('INSERT INTO reviews (order_id, shop_id, user_id, rating, comment, created_at) VALUES (?, ?, ?, ?, ?, ?)', o.id, o.shop_id, user.id, rating, comment, Date.now());
-    else db.run('INSERT INTO seller_reviews (order_id, seller_id, user_id, rating, comment, created_at) VALUES (?, ?, ?, ?, ?, ?)', o.id, o.seller_id, user.id, rating, comment, Date.now());
+    if (o.shop_id) db.run('INSERT INTO reviews (order_id, shop_id, user_id, rating, comment, images, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', o.id, o.shop_id, user.id, rating, comment, images, Date.now());
+    else db.run('INSERT INTO seller_reviews (order_id, seller_id, user_id, rating, comment, images, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', o.id, o.seller_id, user.id, rating, comment, images, Date.now());
     notify(ownerId, `Ulasan baharu ${'★'.repeat(rating)}`, comment || `${user.name} memberi ${rating} bintang.`, o.shop_id ? '#/seller' : `#/u/${o.seller_id}`);
     return { ok: true };
   });
@@ -550,9 +554,9 @@ export function createApi({ db, uploadsDir, demo }) {
     const u = db.one("SELECT id, name, avatar, campus, created_at FROM users WHERE id = ? AND status = 'active'", Number(params.id)) || fail(404, 'Pengguna tidak dijumpai.');
     return {
       user: { ...u, online: isOnline(u.id), ...sellerRating(u.id), sold: db.one("SELECT COUNT(*) AS n FROM orders WHERE seller_id = ? AND listing_id IS NOT NULL AND status = 'COMPLETED'", u.id).n },
-      reviews: db.all(`SELECT r.rating, r.comment, r.created_at, b.name, l.title FROM seller_reviews r JOIN users b ON b.id = r.user_id
+      reviews: db.all(`SELECT r.rating, r.comment, r.images, r.created_at, b.name, l.title FROM seller_reviews r JOIN users b ON b.id = r.user_id
                        JOIN orders o ON o.id = r.order_id LEFT JOIN listings l ON l.id = o.listing_id
-                       WHERE r.seller_id = ? ORDER BY r.created_at DESC LIMIT 30`, u.id)
+                       WHERE r.seller_id = ? ORDER BY r.created_at DESC LIMIT 30`, u.id).map(withImages)
     };
   });
 
@@ -649,8 +653,8 @@ export function createApi({ db, uploadsDir, demo }) {
     const sum = (where, ...p) => db.one(`SELECT COUNT(*) AS n, COALESCE(SUM(total - commission), 0) AS total FROM orders WHERE shop_id = ? AND ${where}`, s.id, ...p);
     return {
       shop: { ...shopOut(s), package: s.package, license_until: s.license_until, license_fee: s.license_fee, reject_reason: s.reject_reason, created_at: s.created_at, booking_hours: s.booking_hours ? JSON.parse(s.booking_hours) : null },
-      items: db.all('SELECT * FROM items WHERE shop_id = ? ORDER BY id', s.id),
-      vehicles: db.all('SELECT * FROM vehicles WHERE shop_id = ? ORDER BY id', s.id),
+      items: db.all('SELECT * FROM items WHERE shop_id = ? ORDER BY id', s.id).map(withImages),
+      vehicles: db.all('SELECT * FROM vehicles WHERE shop_id = ? ORDER BY id', s.id).map(withImages),
       stats: {
         today: sum("status = 'COMPLETED' AND created_at >= ?", dayStart.getTime()),
         all: sum("status = 'COMPLETED'"),
@@ -720,12 +724,13 @@ export function createApi({ db, uploadsDir, demo }) {
       title: text(body.title ?? base.title, 'Nama item', { min: 2, max: 100 }),
       description: text(body.description ?? base.description, 'Penerangan', { max: 300, optional: true }),
       price: sen(body.price ?? base.price, 'Harga', { min: 1, max: 1000000 }),
-      image: body.image !== undefined ? uploadRef(body.image) : base.image ?? null,
+      images: body.images !== undefined ? uploadList(body.images) : base.images ? JSON.parse(base.images) : (base.image ? [base.image] : []),
       available: body.available !== undefined ? (body.available ? 1 : 0) : base.available ?? 1,
       kind: oneOf(body.kind ?? base.kind ?? 'PRODUCT', ['PRODUCT', 'ROUTE', 'SERVICE'], 'Jenis item'),
       duration_min: null
     };
     if (f.kind === 'SERVICE') f.duration_min = sen(body.duration_min ?? base.duration_min, 'Tempoh servis (minit)', { min: 15, max: 480 });
+    f.image = f.images[0] || null; // first photo is the cover
     return f;
   }
   route('POST', '/api/seller/items', ({ user, body }) => {
@@ -733,17 +738,18 @@ export function createApi({ db, uploadsDir, demo }) {
     const s = needShop(user);
     if (db.one('SELECT COUNT(*) AS n FROM items WHERE shop_id = ?', s.id).n >= 200) fail(400, 'Had maksimum 200 item.');
     const f = itemFields(body);
-    const id = Number(db.run('INSERT INTO items (shop_id, title, description, price, image, available, kind, duration_min, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      s.id, f.title, f.description, f.price, f.image, f.available, f.kind, f.duration_min, Date.now()).lastInsertRowid);
-    return { item: db.one('SELECT * FROM items WHERE id = ?', id) };
+    const id = Number(db.run('INSERT INTO items (shop_id, title, description, price, image, images, available, kind, duration_min, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      s.id, f.title, f.description, f.price, f.image, JSON.stringify(f.images), f.available, f.kind, f.duration_min, Date.now()).lastInsertRowid);
+    return { item: withImages(db.one('SELECT * FROM items WHERE id = ?', id)) };
   });
   route('PATCH', '/api/seller/items/:id', ({ user, params, body }) => {
     need(user);
     const s = needShop(user);
     const it = db.one('SELECT * FROM items WHERE id = ? AND shop_id = ?', Number(params.id), s.id) || fail(404, 'Item tidak dijumpai.');
     const f = itemFields(body, it);
-    db.run('UPDATE items SET title=?, description=?, price=?, image=?, available=?, kind=?, duration_min=? WHERE id = ?', f.title, f.description, f.price, f.image, f.available, f.kind, f.duration_min, it.id);
-    return { item: db.one('SELECT * FROM items WHERE id = ?', it.id) };
+    db.run('UPDATE items SET title=?, description=?, price=?, image=?, images=?, available=?, kind=?, duration_min=? WHERE id = ?',
+      f.title, f.description, f.price, f.image, JSON.stringify(f.images), f.available, f.kind, f.duration_min, it.id);
+    return { item: withImages(db.one('SELECT * FROM items WHERE id = ?', it.id)) };
   });
   route('DELETE', '/api/seller/items/:id', ({ user, params }) => {
     need(user);
@@ -1130,6 +1136,35 @@ export function createApi({ db, uploadsDir, demo }) {
     pushBalance(target.id);
     notify(target.id, amount > 0 ? `Dompet dikreditkan ${rm(amount)}` : `Pelarasan dompet ${rm(amount)}`, note, '#/wallet');
     return { ok: true };
+  });
+
+  // ---------- system health & backups ----------
+  route('GET', '/api/admin/system', ({ user }) => {
+    needAdmin(user);
+    const page = db.one('PRAGMA page_count').page_count * db.one('PRAGMA page_size').page_size;
+    const count = (t) => db.one(`SELECT COUNT(*) AS n FROM ${t}`).n;
+    return {
+      integrity: db.integrity(),
+      ledger_mismatches: db.ledgerMismatches(),
+      db_size: page,
+      tables: Object.fromEntries(['users', 'shops', 'items', 'vehicles', 'listings', 'orders', 'transactions', 'messages', 'reviews', 'seller_reviews', 'disputes']
+        .map((t) => [t, count(t)])),
+      triggers: db.all("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name").map((r) => r.name),
+      backups: backups ? backups.list() : []
+    };
+  });
+  route('POST', '/api/admin/backups', ({ user }) => {
+    needAdmin(user);
+    if (!backups) fail(500, 'Sandaran tidak dikonfigurasi.');
+    return { name: backups.run(), backups: backups.list() };
+  });
+  route('GET', '/api/admin/backups/:name', ({ user, params, res }) => {
+    needAdmin(user);
+    const file = backups?.fileFor(params.name);
+    if (!file || !existsSync(file)) fail(404, 'Fail sandaran tidak dijumpai.');
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${params.name}"`, 'Cache-Control': 'no-store' });
+    createReadStream(file).pipe(res);
+    return STREAMING;
   });
 
   route('GET', '/api/admin/settings', ({ user }) => { needAdmin(user); return settingsOut(); });

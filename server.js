@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, bootstrap } from './src/db.js';
 import { createApi, HttpError, STREAMING } from './src/api.js';
+import { createBackups } from './src/backup.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -19,7 +20,14 @@ mkdirSync(UPLOADS_DIR, { recursive: true });
 const db = openDb(path.join(DATA_DIR, 'upsihub.db'));
 const adminEmail = (process.env.ADMIN_EMAIL || 'admin@upsihub.local').toLowerCase();
 const { generatedPassword } = bootstrap(db, { adminEmail, adminPassword: process.env.ADMIN_PASSWORD, demo: DEMO });
-const { routes } = createApi({ db, uploadsDir: UPLOADS_DIR, demo: DEMO });
+const backups = createBackups(db, path.join(DATA_DIR, 'backups'), { keep: Number(process.env.BACKUP_KEEP) || 14 });
+const { routes } = createApi({ db, uploadsDir: UPLOADS_DIR, demo: DEMO, backups });
+
+// Startup health check: structure + wallet ledger.
+const integrity = db.integrity();
+if (integrity.join() !== 'ok') console.error('  ⚠️  Semakan integriti database GAGAL:', integrity);
+const mismatches = db.ledgerMismatches();
+if (mismatches.length) console.error(`  ⚠️  ${mismatches.length} baki dompet tidak sepadan dengan lejar:`, mismatches);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',

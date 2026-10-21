@@ -1,6 +1,7 @@
 import {
   state, api, esc, rm, icon, avatar, toast, timeAgo, actions, forms, changes, inputs, routes, emit, onPage,
-  clearPageListeners, closeOverlay, overlayOpen, setBusy, uploadImage, skeletonView, cartCount, emptyState, hooks
+  clearPageListeners, closeOverlay, overlayOpen, setBusy, uploadImage, skeletonView, cartCount, emptyState, hooks,
+  openGallery, redrawImagesField
 } from './core.js';
 import './pages/market.js';
 import './pages/explore.js';
@@ -142,6 +143,15 @@ function connectStream() {
 Object.assign(actions, {
   closeOverlay,
   reload: () => router(),
+  gallery(el, e) {
+    e.stopPropagation();
+    openGallery(JSON.parse(el.dataset.images), Number(el.dataset.index) || 0);
+  },
+  removeImg(el) {
+    const scope = el.closest('form') || document;
+    const input = scope.querySelector(`input[name="${el.dataset.name}"]`);
+    redrawImagesField(scope, el.dataset.name, JSON.parse(input.value).filter((s) => s !== el.dataset.src));
+  },
   zoom(el) {
     const box = document.createElement('div');
     box.className = 'lightbox';
@@ -230,6 +240,21 @@ Object.assign(actions, {
 });
 
 Object.assign(changes, {
+  async pickImages(el) {
+    const scope = el.closest('form') || document;
+    const name = el.dataset.name;
+    const field = scope.querySelector(`[data-images-field="${name}"]`);
+    const list = JSON.parse(scope.querySelector(`input[name="${name}"]`).value);
+    const files = [...el.files].slice(0, Number(field.dataset.max) - list.length);
+    el.closest('.thumb-add').innerHTML = '<span class="spinner"></span>';
+    try {
+      for (const f of files) list.push(await uploadImage(f));
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      redrawImagesField(scope, name, list);
+    }
+  },
   async pickImage(el) {
     const file = el.files?.[0];
     if (!file) return;

@@ -115,7 +115,7 @@ export function registerModules(ctx) {
   // VEHICLES (car rental)
   // =====================================================================
   function vehicleOut(v, extra = {}) {
-    return { id: v.id, shop_id: v.shop_id, model: v.model, plate: v.plate, seats: v.seats, transmission: v.transmission, image: v.image,
+    return { id: v.id, shop_id: v.shop_id, model: v.model, plate: v.plate, seats: v.seats, transmission: v.transmission, image: v.image, images: JSON.parse(v.images || '[]'),
       daily_rate: v.daily_rate, deposit: v.deposit, notes: v.notes, active: !!v.active, ...extra };
   }
   // end_at is NULL for a rental with no planned return date: the car stays blocked until returned.
@@ -141,31 +141,32 @@ export function registerModules(ctx) {
       plate: text(body.plate ?? base.plate, 'No. plat', { min: 2, max: 15 }).toUpperCase(),
       seats: sen(body.seats ?? base.seats ?? 4, 'Bilangan tempat duduk', { min: 1, max: 15 }),
       transmission: oneOf(body.transmission ?? base.transmission ?? 'AUTO', ['AUTO', 'MANUAL'], 'Transmisi'),
-      image: body.image !== undefined ? uploadRef(body.image) : base.image ?? null,
+      images: body.images !== undefined ? uploadList(body.images) : base.images ? JSON.parse(base.images) : (base.image ? [base.image] : []),
       daily_rate: sen(body.daily_rate ?? base.daily_rate, 'Kadar sewa sehari', { min: 100, max: 100000 }),
       deposit: sen(body.deposit ?? base.deposit ?? 0, 'Deposit', { max: 200000 }),
       notes: text(body.notes ?? base.notes, 'Syarat', { max: 500, optional: true }),
       active: body.active !== undefined ? (body.active ? 1 : 0) : base.active ?? 1
     };
   }
+  const coverOf = (f) => f.images[0] || null;
   const myShopOrFail = (user) => db.one('SELECT * FROM shops WHERE owner_id = ?', user.id) || fail(404, 'Anda belum mendaftar kedai.');
   route('POST', '/api/seller/vehicles', ({ user, body }) => {
     need(user);
     const s = myShopOrFail(user);
     if (db.one('SELECT COUNT(*) AS n FROM vehicles WHERE shop_id = ?', s.id).n >= 30) fail(400, 'Had maksimum 30 kenderaan.');
     const f = vehicleFields(body);
-    const id = Number(db.run('INSERT INTO vehicles (shop_id, model, plate, seats, transmission, image, daily_rate, deposit, notes, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      s.id, f.model, f.plate, f.seats, f.transmission, f.image, f.daily_rate, f.deposit, f.notes, f.active, Date.now()).lastInsertRowid);
-    return { vehicle: db.one('SELECT * FROM vehicles WHERE id = ?', id) };
+    const id = Number(db.run('INSERT INTO vehicles (shop_id, model, plate, seats, transmission, image, images, daily_rate, deposit, notes, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      s.id, f.model, f.plate, f.seats, f.transmission, coverOf(f), JSON.stringify(f.images), f.daily_rate, f.deposit, f.notes, f.active, Date.now()).lastInsertRowid);
+    return { vehicle: vehicleOut(db.one('SELECT * FROM vehicles WHERE id = ?', id)) };
   });
   route('PATCH', '/api/seller/vehicles/:id', ({ user, params, body }) => {
     need(user);
     const s = myShopOrFail(user);
     const v = db.one('SELECT * FROM vehicles WHERE id = ? AND shop_id = ?', Number(params.id), s.id) || fail(404, 'Kenderaan tidak dijumpai.');
     const f = vehicleFields(body, v);
-    db.run('UPDATE vehicles SET model=?, plate=?, seats=?, transmission=?, image=?, daily_rate=?, deposit=?, notes=?, active=? WHERE id = ?',
-      f.model, f.plate, f.seats, f.transmission, f.image, f.daily_rate, f.deposit, f.notes, f.active, v.id);
-    return { vehicle: db.one('SELECT * FROM vehicles WHERE id = ?', v.id) };
+    db.run('UPDATE vehicles SET model=?, plate=?, seats=?, transmission=?, image=?, images=?, daily_rate=?, deposit=?, notes=?, active=? WHERE id = ?',
+      f.model, f.plate, f.seats, f.transmission, coverOf(f), JSON.stringify(f.images), f.daily_rate, f.deposit, f.notes, f.active, v.id);
+    return { vehicle: vehicleOut(db.one('SELECT * FROM vehicles WHERE id = ?', v.id)) };
   });
   route('DELETE', '/api/seller/vehicles/:id', ({ user, params }) => {
     need(user);

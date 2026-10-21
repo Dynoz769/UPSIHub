@@ -12,7 +12,8 @@ const TABS = [
   ['topups', 'Tambah nilai', 'wallet'],
   ['withdrawals', 'Pengeluaran', 'bank'],
   ['users', 'Pengguna', 'users'],
-  ['settings', 'Tetapan', 'sliders']
+  ['settings', 'Tetapan', 'sliders'],
+  ['system', 'Sistem', 'shield']
 ];
 
 page('/admin', () => adminPage('overview'), { admin: true });
@@ -21,7 +22,7 @@ page('/admin/:tab', ({ tab }, query) => adminPage(tab, query), { admin: true });
 async function adminPage(tab, query) {
   const ov = await api('GET', '/api/admin/overview');
   const counts = { shops: ov.pending.shops, topups: ov.pending.topups, withdrawals: ov.pending.withdrawals, disputes: ov.pending.disputes, listings: ov.pending.listings };
-  const render = { overview, shops, disputes, listings, categories, topups, withdrawals, users, settings }[tab] || overview;
+  const render = { overview, shops, disputes, listings, categories, topups, withdrawals, users, settings, system }[tab] || overview;
   const content = await render(ov, query);
   return `
     <div class="stack">
@@ -267,6 +268,43 @@ inputs.searchUsers = (el) => {
   userTimer = setTimeout(async () => { userQuery = el.value.trim(); document.getElementById('userTable').innerHTML = await userRows(); }, 250);
 };
 
+const fmtBytes = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const TABLE_LABEL = { users: 'Pengguna', shops: 'Kedai', items: 'Item menu', vehicles: 'Kenderaan', listings: 'Iklan', orders: 'Pesanan', transactions: 'Transaksi dompet', messages: 'Mesej chat', reviews: 'Ulasan kedai', seller_reviews: 'Ulasan penjual', disputes: 'Pertikaian' };
+
+async function system() {
+  const s = await api('GET', '/api/admin/system');
+  const ok = s.integrity.join() === 'ok';
+  const ledgerOk = !s.ledger_mismatches.length;
+  return `
+    <div class="stack">
+      <div class="grid-3">
+        <div class="card stat"><div class="between"><span class="label">Integriti database</span><span class="stat-icon ${ok ? 'green' : 'red'}">${icon(ok ? 'check' : 'alert')}</span></div><div class="value">${ok ? 'OK' : 'Rosak'}</div><div class="sub">${ok ? 'Struktur fail database sihat' : esc(s.integrity.join('; '))}</div></div>
+        <div class="card stat"><div class="between"><span class="label">Audit lejar dompet</span><span class="stat-icon ${ledgerOk ? 'green' : 'red'}">${icon(ledgerOk ? 'check' : 'alert')}</span></div><div class="value">${ledgerOk ? 'Seimbang' : `${s.ledger_mismatches.length} isu`}</div><div class="sub">Setiap baki = jumlah transaksi pengguna</div></div>
+        <div class="card stat"><div class="between"><span class="label">Saiz database</span><span class="stat-icon">${icon('package')}</span></div><div class="value">${fmtBytes(s.db_size)}</div><div class="sub">SQLite · WAL · synchronous=FULL</div></div>
+      </div>
+      ${ledgerOk ? '' : `<div class="alert danger">${icon('alert')}<div><b>Baki tidak sepadan dengan lejar:</b> ${s.ledger_mismatches.map((m) => `${esc(m.name)} (baki ${rm(m.balance)}, lejar ${rm(m.ledger)})`).join(', ')}</div></div>`}
+      <div class="grid-2" style="align-items:start">
+        <section class="card">
+          <div class="card-head"><div><h2 class="section-title">Sandaran database</h2><p class="xs faint">Automatik setiap 24 jam · ${s.backups.length} salinan disimpan</p></div>
+            <button class="btn btn-primary btn-sm" data-act="runBackup">${icon('refresh')} Sandaran sekarang</button></div>
+          ${s.backups.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Fail</th><th>Saiz</th><th>Masa</th><th></th></tr></thead><tbody>
+            ${s.backups.map((b) => `<tr><td class="mono xs">${esc(b.name)}</td><td class="small">${fmtBytes(b.size)}</td><td class="small faint">${fmtDateTime(b.created_at)}</td>
+              <td class="right"><a class="btn btn-ghost btn-sm" href="/api/admin/backups/${encodeURIComponent(b.name)}" download>${icon('upload')} Muat turun</a></td></tr>`).join('')}
+          </tbody></table></div>` : emptyState('package', 'Tiada sandaran', 'Tekan "Sandaran sekarang" untuk membuat salinan pertama.')}
+          <div class="card-body"><p class="xs faint">Untuk memulihkan: hentikan pelayan, gantikan <code>data/upsihub.db</code> dengan fail sandaran, kemudian mulakan semula.</p></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2 class="section-title">Rekod</h2></div>
+          <div class="card-body"><dl class="kv">${Object.entries(s.tables).map(([t, n]) => `<dt>${esc(TABLE_LABEL[t] || t)}</dt><dd>${n.toLocaleString('ms-MY')}</dd>`).join('')}</dl></div>
+          <div class="card-body" style="border-top:1px solid var(--border)">
+            <div class="label" style="margin-bottom:6px">Peraturan perlindungan data (${s.triggers.length})</div>
+            <div class="row-wrap">${s.triggers.map((t) => `<span class="badge green">${icon('lock')} ${esc(t.replace(/^trg_/, ''))}</span>`).join('')}</div>
+          </div>
+        </section>
+      </div>
+    </div>`;
+}
+
 async function settings() {
   const s = await api('GET', '/api/admin/settings');
   return `
@@ -360,6 +398,11 @@ Object.assign(actions, {
         </form>`,
       foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="resolveForm">Sahkan keputusan</button>`
     });
+  },
+  async runBackup() {
+    const { name } = await api('POST', '/api/admin/backups');
+    toast(`Sandaran ${name} berjaya dibuat.`, 'success');
+    refresh();
   },
   async listingMod(el) {
     const { id, action } = el.dataset;

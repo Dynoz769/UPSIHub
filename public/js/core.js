@@ -237,3 +237,60 @@ export const go = (hash) => { if (location.hash === hash) emit('uh:refresh'); el
 export const refresh = () => emit('uh:refresh');
 // Filled in by app.js so pages can reload the session without a circular import.
 export const hooks = { loadMe: async () => {}, renderShell: () => {} };
+
+// ---------- photo galleries ----------
+// Multi-photo picker. The hidden input `name` holds a JSON array of uploaded URLs.
+export function imagesField(name, values = [], { max = 5, label = 'Gambar', hint = 'Gambar pertama dijadikan gambar utama.' } = {}) {
+  return `
+    <div class="field" data-images-field="${name}" data-max="${max}">
+      <label>${esc(label)} <span class="faint">(maks ${max})</span></label>
+      <div class="multi-images">
+        ${values.map((src) => `<div class="thumb"><img src="${esc(src)}" alt=""><button type="button" class="thumb-x" data-act="removeImg" data-name="${name}" data-src="${esc(src)}" aria-label="Buang">${icon('x')}</button></div>`).join('')}
+        ${values.length < max ? `<label class="thumb thumb-add">${icon('plus')}<input type="file" accept="image/*" multiple hidden data-change="pickImages" data-name="${name}"></label>` : ''}
+      </div>
+      <input type="hidden" name="${name}" value="${esc(JSON.stringify(values))}">
+      ${hint ? `<span class="hint">${esc(hint)}</span>` : ''}
+    </div>`;
+}
+export function redrawImagesField(scope, name, list) {
+  const field = scope.querySelector(`[data-images-field="${name}"]`);
+  const label = field.querySelector('label').firstChild.textContent.trim();
+  const hint = field.querySelector('.hint')?.textContent || '';
+  field.outerHTML = imagesField(name, list, { max: Number(field.dataset.max), label, hint });
+}
+
+// Small clickable photo strip (reviews, items) that opens the full-screen gallery.
+export function photoStrip(images = [], size = 56) {
+  if (!images.length) return '';
+  const data = esc(JSON.stringify(images));
+  return `<div class="photo-strip">${images.map((src, i) => `<button type="button" class="thumb" style="width:${size}px;height:${size}px" data-act="gallery" data-images='${data}' data-index="${i}"><img src="${esc(src)}" alt="" loading="lazy"></button>`).join('')}</div>`;
+}
+
+export function openGallery(images, start = 0) {
+  let i = start;
+  const box = document.createElement('div');
+  box.className = 'lightbox gallery-box';
+  const draw = () => {
+    box.innerHTML = `
+      <img src="${esc(images[i])}" alt="">
+      ${images.length > 1 ? `
+        <button class="gal-nav prev" aria-label="Sebelum">${icon('back')}</button>
+        <button class="gal-nav next" aria-label="Seterusnya">${icon('right')}</button>
+        <div class="gal-count">${i + 1} / ${images.length}</div>` : ''}
+      <button class="gal-close" aria-label="Tutup">${icon('x')}</button>`;
+  };
+  box.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (e.target.closest('.prev')) { i = (i - 1 + images.length) % images.length; draw(); }
+    else if (e.target.closest('.next')) { i = (i + 1) % images.length; draw(); }
+    else if (e.target.closest('.gal-close') || e.target === box) box.remove();
+  });
+  const onKey = (e) => {
+    if (!document.body.contains(box)) { document.removeEventListener('keydown', onKey); return; }
+    if (e.key === 'ArrowLeft') { i = (i - 1 + images.length) % images.length; draw(); }
+    if (e.key === 'ArrowRight') { i = (i + 1) % images.length; draw(); }
+  };
+  document.addEventListener('keydown', onKey);
+  draw();
+  document.body.appendChild(box);
+}
