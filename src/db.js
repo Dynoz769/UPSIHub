@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS shops (
   package TEXT,
   license_fee INTEGER NOT NULL DEFAULT 0,
   license_until INTEGER,
+  booking_hours TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS items (
@@ -50,13 +51,19 @@ CREATE TABLE IF NOT EXISTS items (
   price INTEGER NOT NULL,
   image TEXT,
   available INTEGER NOT NULL DEFAULT 1,
+  kind TEXT NOT NULL DEFAULT 'PRODUCT',
+  duration_min INTEGER,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY,
   code TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'ORDER',
   user_id INTEGER NOT NULL REFERENCES users(id),
-  shop_id INTEGER NOT NULL REFERENCES shops(id),
+  seller_id INTEGER NOT NULL REFERENCES users(id),
+  shop_id INTEGER REFERENCES shops(id),
+  listing_id INTEGER REFERENCES listings(id),
+  vehicle_id INTEGER REFERENCES vehicles(id),
   status TEXT NOT NULL,
   payment TEXT NOT NULL,
   fulfilment TEXT NOT NULL,
@@ -64,8 +71,16 @@ CREATE TABLE IF NOT EXISTS orders (
   note TEXT NOT NULL DEFAULT '',
   subtotal INTEGER NOT NULL,
   delivery_fee INTEGER NOT NULL,
+  deposit INTEGER NOT NULL DEFAULT 0,
   total INTEGER NOT NULL,
   commission INTEGER NOT NULL DEFAULT 0,
+  payout TEXT NOT NULL DEFAULT 'NONE',
+  release_at INTEGER,
+  start_at INTEGER,
+  end_at INTEGER,
+  pickup TEXT,
+  dropoff TEXT,
+  pax INTEGER,
   cancel_reason TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -170,18 +185,84 @@ CREATE TABLE IF NOT EXISTS disputes (
   created_at INTEGER NOT NULL,
   resolved_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS categories (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  emoji TEXT NOT NULL DEFAULT '',
+  sort INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(kind, name)
+);
+CREATE TABLE IF NOT EXISTS vehicles (
+  id INTEGER PRIMARY KEY,
+  shop_id INTEGER NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  plate TEXT NOT NULL,
+  seats INTEGER NOT NULL DEFAULT 4,
+  transmission TEXT NOT NULL DEFAULT 'AUTO',
+  image TEXT,
+  daily_rate INTEGER NOT NULL,
+  deposit INTEGER NOT NULL DEFAULT 0,
+  notes TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS listings (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  kind TEXT NOT NULL,
+  category TEXT,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  price INTEGER,
+  negotiable INTEGER NOT NULL DEFAULT 0,
+  condition TEXT,
+  campus TEXT NOT NULL,
+  location TEXT NOT NULL DEFAULT '',
+  images TEXT NOT NULL DEFAULT '[]',
+  meta TEXT NOT NULL DEFAULT '{}',
+  stock INTEGER,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  views INTEGER NOT NULL DEFAULT 0,
+  reports INTEGER NOT NULL DEFAULT 0,
+  removed_reason TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_items_shop ON items(shop_id);
-CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_orders_shop ON orders(shop_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, id);
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reviews_shop ON reviews(shop_id);
 `;
+
+const POST_MIGRATION_INDEXES = `
+CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_shop ON orders(shop_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_seller ON orders(seller_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_release ON orders(payout, release_at);
+CREATE INDEX IF NOT EXISTS idx_orders_vehicle ON orders(vehicle_id, start_at);
+CREATE INDEX IF NOT EXISTS idx_listings_kind ON listings(kind, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_listings_user ON listings(user_id);
+CREATE INDEX IF NOT EXISTS idx_vehicles_shop ON vehicles(shop_id);
+`;
+
+export const DEFAULT_CATEGORIES = {
+  shop: [
+    ['Makanan & Minuman', '🍱'], ['Prebet & Transport', '🚗'], ['Servis Runner', '⚡'], ['Servis Lain', '🛠️'],
+    ['Kek & Bakeri', '🎂'], ['Pakaian & Fesyen', '👕'], ['Dobi & Laundry', '🧺'], ['Kecantikan & Kesihatan', '💄'],
+    ['Elektronik & Gajet', '📱'], ['Alat Tulis & Percetakan', '🖨️'], ['Tutor & Akademik', '🎓']
+  ],
+  market: [
+    ['Buku & Nota', '📚'], ['Elektronik & Gajet', '💻'], ['Perabot & Barang Bilik', '🛏️'], ['Pakaian & Aksesori', '👟'],
+    ['Kenderaan & Aksesori', '🛵'], ['Sukan & Hobi', '⚽'], ['Dapur & Peralatan', '🍳'], ['Lain-lain', '📦']
+  ]
+};
 
 export const DEFAULT_SETTINGS = {
   packages: [
@@ -197,7 +278,8 @@ export const DEFAULT_SETTINGS = {
 };
 
 function migrate(db) {
-  const cols = db.prepare('PRAGMA table_info(orders)').all().map((c) => c.name);
+  const colsOf = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+  const cols = colsOf('orders');
   if (!cols.includes('payout')) {
     // payout tracks the held wallet money: NONE (cash), HELD, RELEASED (to seller) or REFUNDED (to buyer).
     db.exec(`
@@ -207,8 +289,40 @@ function migrate(db) {
         WHEN payment != 'WALLET' THEN 'NONE'
         WHEN status = 'COMPLETED' THEN 'RELEASED'
         WHEN status IN ('CANCELLED', 'REJECTED') THEN 'REFUNDED'
-        ELSE 'HELD' END;
-      CREATE INDEX IF NOT EXISTS idx_orders_release ON orders(payout, release_at);`);
+        ELSE 'HELD' END;`);
+  }
+  if (!colsOf('items').includes('kind')) {
+    db.exec("ALTER TABLE items ADD COLUMN kind TEXT NOT NULL DEFAULT 'PRODUCT'; ALTER TABLE items ADD COLUMN duration_min INTEGER;");
+  }
+  if (!colsOf('shops').includes('booking_hours')) db.exec('ALTER TABLE shops ADD COLUMN booking_hours TEXT;');
+  if (!colsOf('orders').includes('seller_id')) {
+    // Orders used to always belong to a shop. Rebuild so a seller can also be an
+    // individual (second-hand listings) and bookings can carry dates/locations.
+    db.exec('PRAGMA foreign_keys = OFF;');
+    db.exec(`BEGIN;
+      CREATE TABLE orders_new (
+        id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'ORDER',
+        user_id INTEGER NOT NULL REFERENCES users(id), seller_id INTEGER NOT NULL REFERENCES users(id),
+        shop_id INTEGER REFERENCES shops(id), listing_id INTEGER REFERENCES listings(id), vehicle_id INTEGER REFERENCES vehicles(id),
+        status TEXT NOT NULL, payment TEXT NOT NULL, fulfilment TEXT NOT NULL, address TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+        subtotal INTEGER NOT NULL, delivery_fee INTEGER NOT NULL, deposit INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL,
+        commission INTEGER NOT NULL DEFAULT 0, payout TEXT NOT NULL DEFAULT 'NONE', release_at INTEGER,
+        start_at INTEGER, end_at INTEGER, pickup TEXT, dropoff TEXT, pax INTEGER, cancel_reason TEXT,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+      INSERT INTO orders_new (id, code, kind, user_id, seller_id, shop_id, status, payment, fulfilment, address, note, subtotal,
+        delivery_fee, total, commission, payout, release_at, cancel_reason, created_at, updated_at)
+        SELECT o.id, o.code, 'ORDER', o.user_id, s.owner_id, o.shop_id, o.status, o.payment, o.fulfilment, o.address, o.note, o.subtotal,
+        o.delivery_fee, o.total, o.commission, o.payout, o.release_at, o.cancel_reason, o.created_at, o.updated_at
+        FROM orders o JOIN shops s ON s.id = o.shop_id;
+      DROP TABLE orders;
+      ALTER TABLE orders_new RENAME TO orders;
+      COMMIT;`);
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
+  db.exec(POST_MIGRATION_INDEXES);
+  if (db.prepare('SELECT COUNT(*) AS n FROM categories').get().n === 0) {
+    const ins = db.prepare('INSERT INTO categories (kind, name, emoji, sort) VALUES (?, ?, ?, ?)');
+    for (const [kind, list] of Object.entries(DEFAULT_CATEGORIES)) list.forEach(([name, emoji], i) => ins.run(kind, name, emoji, i));
   }
 }
 
@@ -279,11 +393,11 @@ function seedDemo(q, now) {
       name, email, pass, campus, balance, matric, now).lastInsertRowid);
 
   const student = addUser('Aina Pelajar', 'pelajar@demo.upsi', 'KSAB', 5000, 'D20231000001');
-  if (student) {
-    q.run("INSERT INTO transactions (user_id, type, amount, balance_after, description, created_at) VALUES (?, 'ADJUST', 5000, 5000, 'Kredit demo', ?)", student, now);
-  }
+  q.run("INSERT INTO transactions (user_id, type, amount, balance_after, description, created_at) VALUES (?, 'ADJUST', 5000, 5000, 'Kredit demo', ?)", student, now);
 
   const year = 365 * 864e5;
+  const tutorHours = JSON.stringify({ days: [1, 2, 3, 4, 5, 6], start: '09:00', end: '21:00' });
+  // items: [title, description, price, kind?, duration_min?]
   const shops = [
     {
       owner: ['Kak Ros', 'nasilemak@demo.upsi', 'KSAB'],
@@ -296,11 +410,15 @@ function seedDemo(q, now) {
     },
     {
       owner: ['Abang Farhan', 'prebet@demo.upsi', 'KSAS'],
-      shop: ['Abang Prebet Express (KSAB ⇄ KSAS)', 'Prebet & Transport', 'KSAS', 'Servis ulang-alik Tanjung Malim, KTM, KSAS dan KSAB. Kereta MPV selesa, dipandu cermat.', 'Setiap hari, 7:00 pagi – 11:00 malam', 0, 0, 'Tahunan', 6000],
+      shop: ['Abang Prebet Express (KSAB ⇄ KSAS)', 'Prebet & Transport', 'KSAS', 'Servis ulang-alik Tanjung Malim, KTM, KSAS dan KSAB. Kereta MPV selesa, dipandu cermat. Kereta sewa harian juga tersedia.', 'Setiap hari, 7:00 pagi – 11:00 malam', 0, 0, 'Tahunan', 6000],
       items: [
-        ['Trip KSAB ke KSAS (Satu Hala)', 'Per kepala (min 3 orang)', 400],
-        ['Trip Stesen KTM Tanjung Malim', 'Diambil terus dari perhentian bas kampus', 500],
-        ['Sewa Kereta + Pemandu (Sehari)', 'Untuk tugasan luaran / rombongan', 12000]
+        ['KSAB ⇄ KSAS (satu hala)', 'Harga seorang. Ambil di mana-mana blok kediaman.', 400, 'ROUTE'],
+        ['Kampus → Stesen KTM Tanjung Malim', 'Harga seorang. Sesuai untuk balik kampung.', 500, 'ROUTE'],
+        ['Kampus → Aeon Rawang / Bandar Behrang', 'Harga seorang, pergi-balik.', 1500, 'ROUTE']
+      ],
+      vehicles: [
+        ['Perodua Bezza 1.3 (Auto)', 'PKX 2231', 5, 'AUTO', 8000, 5000, 'Minyak penuh semasa ambil, pulangkan penuh. Lesen P tidak dibenarkan.'],
+        ['Perodua Alza (7 tempat duduk)', 'WYB 8812', 7, 'AUTO', 13000, 10000, 'Sesuai untuk rombongan & balik kampung beramai-ramai.']
       ]
     },
     {
@@ -311,6 +429,16 @@ function seedDemo(q, now) {
         ['Print Warna (Per Muka)', 'Sesuai untuk graf & laporan', 50],
         ['Comb Binding + Cover Transparent', 'Termasuk plastik depan/belakang', 350]
       ]
+    },
+    {
+      owner: ['Cikgu Amir', 'tutor@demo.upsi', 'KSAB'],
+      shop: ['Tutor Matematik & Statistik Cikgu Amir', 'Tutor & Akademik', 'KSAB', 'Kelas tuisyen 1-ke-1 untuk Kalkulus, Statistik & SPSS. Di perpustakaan atau dalam talian.', 'Isnin – Sabtu, 9:00 pagi – 9:00 malam', 0, 0, 'Semester', 3500],
+      hours: tutorHours,
+      items: [
+        ['Tuisyen Kalkulus (1 jam)', '1-ke-1, termasuk latihan tambahan', 3000, 'SERVICE', 60],
+        ['Bimbingan SPSS / Analisis Data (2 jam)', 'Bawa data kajian anda', 7000, 'SERVICE', 120],
+        ['Semakan Tugasan Statistik (30 min)', 'Semakan pantas sebelum hantar', 1500, 'SERVICE', 30]
+      ]
     }
   ];
 
@@ -318,12 +446,44 @@ function seedDemo(q, now) {
     const owner = addUser(s.owner[0], s.owner[1], s.owner[2], 0, null);
     const [name, category, campus, description, hours, fee, min, pkg, price] = s.shop;
     const shopId = Number(q.run(
-      `INSERT INTO shops (owner_id, name, category, campus, description, hours, delivery_fee, min_order, status, package, license_fee, license_until, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?)`,
-      owner, name, category, campus, description, hours, fee, min, pkg, price, now + year, now
+      `INSERT INTO shops (owner_id, name, category, campus, description, hours, delivery_fee, min_order, status, package, license_fee, license_until, booking_hours, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?)`,
+      owner, name, category, campus, description, hours, fee, min, pkg, price, now + year, s.hours || null, now
     ).lastInsertRowid);
-    for (const [title, desc, p] of s.items) {
-      q.run('INSERT INTO items (shop_id, title, description, price, created_at) VALUES (?, ?, ?, ?, ?)', shopId, title, desc, p, now);
+    for (const [title, desc, p, kind = 'PRODUCT', duration = null] of s.items) {
+      q.run('INSERT INTO items (shop_id, title, description, price, kind, duration_min, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', shopId, title, desc, p, kind, duration, now);
+    }
+    for (const [model, plate, seats, trans, rate, deposit, notes] of s.vehicles || []) {
+      q.run('INSERT INTO vehicles (shop_id, model, plate, seats, transmission, daily_rate, deposit, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        shopId, model, plate, seats, trans, rate, deposit, notes, now);
     }
   }
+
+  // Student-to-student listings
+  const seller = addUser('Danial Senior', 'senior@demo.upsi', 'KSAS', 0, 'D20201000777');
+  const listing = (kind, category, title, description, price, extra = {}) =>
+    q.run(`INSERT INTO listings (user_id, kind, category, title, description, price, negotiable, condition, campus, location, meta, stock, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      extra.user || seller, kind, category, title, description, price, extra.negotiable ? 1 : 0, extra.condition || null,
+      extra.campus || 'KSAS', extra.location || '', JSON.stringify(extra.meta || {}), extra.stock ?? null, now, now);
+  listing('ITEM', 'Buku & Nota', 'Buku Teks Psikologi Pendidikan (Edisi ke-3)', 'Ada sedikit highlight. Sesuai untuk kursus KPF3012.', 2500, { negotiable: true, condition: 'BAIK', location: 'Kolej Ungku Omar', stock: 1 });
+  listing('ITEM', 'Perabot & Barang Bilik', 'Kipas Meja KDK + Rak Buku Plastik', 'Pindah keluar kolej, jual murah. Ambil sendiri.', 4000, { negotiable: true, condition: 'BAIK', location: 'KSAS Blok C', stock: 1 });
+  listing('ITEM', 'Elektronik & Gajet', 'Kalkulator Saintifik Casio fx-570EX', 'Guna satu semester sahaja, macam baru.', 4500, { condition: 'SEPERTI_BARU', location: 'Perpustakaan Tuanku Bainun', stock: 1 });
+  listing('ROOM', null, 'Bilik Sederhana Taman Bernam Jaya – Pelajar Perempuan', 'Rumah teres 2 tingkat, 5 minit ke KSAS. WiFi & mesin basuh disediakan.', 30000, {
+    location: 'Taman Bernam Jaya',
+    meta: { room_type: 'BILIK_SINGLE', gender: 'PEREMPUAN', available_from: new Date(now + 7 * 864e5).toISOString().slice(0, 10), deposit_note: '1 bulan + RM100 utiliti', booking_fee: 5000, facilities: ['WIFI', 'MESIN_BASUH', 'PERABOT', 'PARKING'] }
+  });
+  listing('ROOM', null, 'Master Bedroom Proton City – Lelaki', 'Bilik master dengan bilik air sendiri & aircond.', 45000, {
+    campus: 'TM', location: 'Proton City Fasa 2',
+    meta: { room_type: 'MASTER', gender: 'LELAKI', available_from: new Date(now).toISOString().slice(0, 10), deposit_note: '2 bulan', booking_fee: 10000, facilities: ['WIFI', 'AIRCOND', 'BILIK_AIR_SENDIRI', 'PERABOT'] }
+  });
+  listing('JOB', null, 'Pembantu Kafe Hujung Minggu', 'Kafe di Bandar Behrang perlukan 2 pembantu. Sabtu & Ahad.', 900, {
+    campus: 'TM', location: 'Bandar Behrang 2020', meta: { pay_unit: 'JAM', employer: 'Kafe Kopi Kampus', schedule: 'Sabtu & Ahad, 10 pagi – 6 petang' }
+  });
+  listing('EVENT', null, 'Malam Kebudayaan UPSI 2026', 'Persembahan tarian, muzik tradisional & gerai makanan.', 1000, {
+    location: 'Dewan Tuanku Canselor', stock: 200, meta: { event_at: now + 10 * 864e5, venue: 'Dewan Tuanku Canselor, KSAS' }
+  });
+  listing('LOST', null, 'Hilang: Kad Matrik & Dompet Hitam', 'Tercicir sekitar kafeteria KSAB petang semalam. Sesiapa jumpa sila chat.', null, {
+    campus: 'KSAB', location: 'Kafeteria KSAB', meta: { type: 'LOST', date: new Date(now - 864e5).toISOString().slice(0, 10) }
+  });
 }

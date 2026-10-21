@@ -3,8 +3,9 @@ import path from 'node:path';
 import { hashPassword, verifyPassword, randomToken, rateLimit } from './security.js';
 import { subscribe, push, isOnline } from './realtime.js';
 import { DEFAULT_SETTINGS } from './db.js';
+import { HttpError, fail, text, sen, oneOf, uploadRef, rm } from './validate.js';
+import { registerModules, LISTING_KINDS, LISTING_META } from './modules.js';
 
-export const CATEGORIES = ['Makanan & Minuman', 'Prebet & Transport', 'Servis Runner', 'Servis Lain'];
 export const CAMPUSES = {
   KSAB: 'Kampus Sultan Abdul Jalil (KSAB)',
   KSAS: 'Kampus Sultan Azlan Shah (KSAS)',
@@ -22,37 +23,7 @@ export const DISPUTE_REASONS = {
   OTHER: 'Lain-lain'
 };
 
-export class HttpError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
-const fail = (status, message) => { throw new HttpError(status, message); };
-
-// ---------- validation helpers ----------
-function text(v, label, { min = 0, max = 500, optional = false } = {}) {
-  const s = typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim();
-  if (!s && optional) return '';
-  if (s.length < Math.max(min, optional ? 0 : 1)) fail(400, `${label} diperlukan${min > 1 ? ` (min ${min} aksara)` : ''}.`);
-  if (s.length > max) fail(400, `${label} terlalu panjang (maks ${max} aksara).`);
-  return s;
-}
-function sen(v, label, { min = 0, max = 10000000 } = {}) {
-  const n = Number(v);
-  if (!Number.isInteger(n) || n < min || n > max) fail(400, `${label} tidak sah.`);
-  return n;
-}
-function oneOf(v, list, label) {
-  if (!list.includes(v)) fail(400, `${label} tidak sah.`);
-  return v;
-}
-function uploadRef(v) {
-  if (v == null || v === '') return null;
-  if (typeof v !== 'string' || !/^\/uploads\/[A-Za-z0-9_-]+\.(png|jpg|webp|gif)$/.test(v)) fail(400, 'Rujukan gambar tidak sah.');
-  return v;
-}
-const rm = (n) => `RM${(n / 100).toFixed(2)}`;
+export { HttpError };
 
 export function createApi({ db, uploadsDir, demo }) {
   const routes = [];
@@ -94,6 +65,9 @@ export function createApi({ db, uploadsDir, demo }) {
   const admins = () => db.all("SELECT id FROM users WHERE role = 'admin' AND status = 'active'").map((r) => r.id);
   const notifyAdmins = (title, body, link) => admins().forEach((id) => notify(id, title, body, link));
 
+  const cats = (kind) => db.all('SELECT name FROM categories WHERE kind = ? AND active = 1 ORDER BY sort, id', kind).map((r) => r.name);
+  const catEmoji = () => Object.fromEntries(db.all('SELECT name, emoji FROM categories').map((r) => [r.name, r.emoji]));
+
   function shopRating(shopId) {
     const r = db.one('SELECT ROUND(AVG(rating), 1) AS avg, COUNT(*) AS n FROM reviews WHERE shop_id = ?', shopId);
     return { rating: r.avg || 0, reviews: r.n };
@@ -108,11 +82,18 @@ export function createApi({ db, uploadsDir, demo }) {
   const isListed = (s) => s && s.status === 'APPROVED' && s.license_until > Date.now();
 
   function orderOut(o) {
-    const shop = db.one('SELECT id, name, owner_id, campus FROM shops WHERE id = ?', o.shop_id);
+    const seller = db.one('SELECT id, name, phone FROM users WHERE id = ?', o.seller_id);
+    const listing = o.listing_id ? db.one('SELECT id, kind, title, images FROM listings WHERE id = ?', o.listing_id) : null;
+    // `shop` always has a display name & owner so the UI can treat every order alike.
+    const shop = (o.shop_id && db.one('SELECT id, name, owner_id, campus FROM shops WHERE id = ?', o.shop_id))
+      || { id: null, name: listing ? listing.title : seller.name, owner_id: o.seller_id, campus: null };
     const buyer = db.one('SELECT id, name, phone, matric FROM users WHERE id = ?', o.user_id);
     return {
       ...o,
       shop,
+      seller,
+      listing: listing && { id: listing.id, kind: listing.kind, title: listing.title, image: JSON.parse(listing.images)[0] || null },
+      vehicle: o.vehicle_id ? db.one('SELECT id, model, plate, seats, image FROM vehicles WHERE id = ?', o.vehicle_id) : null,
       buyer,
       items: db.all('SELECT item_id, title, price, qty FROM order_items WHERE order_id = ?', o.id),
       events: db.all('SELECT status, at FROM order_events WHERE order_id = ? ORDER BY id', o.id),
@@ -166,7 +147,11 @@ export function createApi({ db, uploadsDir, demo }) {
   // CONFIG & AUTH
   // =====================================================================
   route('GET', '/api/config', () => ({
-    categories: CATEGORIES,
+    categories: cats('shop'),
+    market_categories: cats('market'),
+    category_emoji: catEmoji(),
+    listing_kinds: LISTING_KINDS,
+    listing_meta: LISTING_META,
     campuses: CAMPUSES,
     dispute_reasons: DISPUTE_REASONS,
     demo,
@@ -305,7 +290,9 @@ export function createApi({ db, uploadsDir, demo }) {
         owner: { ...owner, online: isOnline(owner.id) },
         orders: db.one("SELECT COUNT(*) AS n FROM orders WHERE shop_id = ? AND status = 'COMPLETED'", s.id).n
       }),
-      items: db.all('SELECT id, title, description, price, image, available FROM items WHERE shop_id = ? ORDER BY available DESC, id', s.id),
+      items: db.all('SELECT id, title, description, price, image, available, kind, duration_min FROM items WHERE shop_id = ? ORDER BY available DESC, id', s.id),
+      vehicles: db.all('SELECT id, model, plate, seats, transmission, image, daily_rate, deposit, notes FROM vehicles WHERE shop_id = ? AND active = 1 ORDER BY daily_rate', s.id),
+      booking_hours: s.booking_hours ? JSON.parse(s.booking_hours) : null,
       reviews: db.all(`SELECT r.rating, r.comment, r.created_at, u.name FROM reviews r JOIN users u ON u.id = r.user_id
                        WHERE r.shop_id = ? ORDER BY r.created_at DESC LIMIT 30`, s.id)
     };
@@ -323,12 +310,14 @@ export function createApi({ db, uploadsDir, demo }) {
     ACCEPTED: 'diterima & sedang disediakan', READY: 'sedia', COMPLETED: 'selesai',
     CANCELLED: 'dibatalkan', REJECTED: 'ditolak oleh peniaga'
   };
-  const ownerOf = (o) => db.one('SELECT owner_id FROM shops WHERE id = ?', o.shop_id).owner_id;
+  const ownerOf = (o) => o.seller_id;
+  const sellerShare = (o) => o.total - o.deposit - o.commission;
 
-  // Held wallet money → seller. Must run inside db.tx().
+  // Held wallet money → seller (any refundable deposit goes back to the buyer). Must run inside db.tx().
   function releaseToSeller(o, note = '') {
-    moveMoney(ownerOf(o), o.total - o.commission, 'ORDER_EARN',
+    moveMoney(o.seller_id, sellerShare(o), 'ORDER_EARN',
       `Hasil jualan ${o.code}${o.commission ? ` (selepas komisen ${rm(o.commission)})` : ''}${note}`, o.code);
+    if (o.deposit) moveMoney(o.user_id, o.deposit, 'ORDER_REFUND', `Pulangan deposit ${o.code}`, o.code);
     db.run("UPDATE orders SET payout = 'RELEASED', release_at = NULL WHERE id = ?", o.id);
   }
   // Held wallet money → buyer. Must run inside db.tx().
@@ -343,8 +332,9 @@ export function createApi({ db, uploadsDir, demo }) {
     for (const o of due) {
       try {
         db.tx(() => releaseToSeller(o, ' – dilepaskan automatik'));
-        pushBalance(ownerOf(o));
-        notify(ownerOf(o), `Bayaran ${o.code} dilepaskan 💰`, `${rm(o.total - o.commission)} dikreditkan ke dompet anda.`, `#/orders/${o.id}`);
+        pushBalance(o.seller_id); pushBalance(o.user_id);
+        notify(o.seller_id, `Bayaran ${o.code} dilepaskan 💰`, `${rm(sellerShare(o))} dikreditkan ke dompet anda.`, `#/orders/${o.id}`);
+        if (o.deposit) notify(o.user_id, `Deposit ${o.code} dipulangkan`, `${rm(o.deposit)} kembali ke dompet anda.`, `#/orders/${o.id}`);
       } catch (err) {
         console.error('auto-release failed', o.code, err);
       }
@@ -353,10 +343,53 @@ export function createApi({ db, uploadsDir, demo }) {
   sweepReleases();
   setInterval(sweepReleases, Number(process.env.RELEASE_SWEEP_MS) || 60e3).unref();
   function broadcastOrder(o) {
-    const shop = db.one('SELECT owner_id FROM shops WHERE id = ?', o.shop_id);
     const payload = { id: o.id, status: db.one('SELECT status FROM orders WHERE id = ?', o.id).status };
     push(o.user_id, 'order', payload);
-    push(shop.owner_id, 'order', payload);
+    push(o.seller_id, 'order', payload);
+  }
+
+  // Creates any kind of order (cart, booking, listing purchase) and holds wallet payment.
+  function createOrder({ buyer, sellerId, shopId = null, listingId = null, vehicleId = null, kind = 'ORDER', lines, deliveryFee = 0,
+    deposit = 0, payment, fulfilment = 'PICKUP', address = '', note = '', startAt = null, endAt = null, pickup = null, dropoff = null, pax = null,
+    label, inTx }) {
+    const subtotal = lines.reduce((sum, l) => sum + l.price * l.qty, 0);
+    const total = subtotal + deliveryFee + deposit;
+    const commission = payment === 'WALLET' ? Math.round((subtotal + deliveryFee) * (Number(db.getSetting('commission_pct')) || 0) / 100) : 0;
+    const order = db.tx(() => {
+      inTx?.();
+      const now = Date.now();
+      const code = 'UH' + now.toString(36).toUpperCase().slice(-6) + randomToken(2).replace(/[^A-Za-z0-9]/g, 'X').toUpperCase().slice(0, 2);
+      const id = Number(db.run(`INSERT INTO orders (code, kind, user_id, seller_id, shop_id, listing_id, vehicle_id, status, payment, fulfilment, address, note,
+          subtotal, delivery_fee, deposit, total, commission, payout, start_at, end_at, pickup, dropoff, pax, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        code, kind, buyer.id, sellerId, shopId, listingId, vehicleId, payment, fulfilment, address, note,
+        subtotal, deliveryFee, deposit, total, commission, payment === 'WALLET' ? 'HELD' : 'NONE', startAt, endAt, pickup, dropoff, pax, now, now).lastInsertRowid);
+      for (const l of lines) db.run('INSERT INTO order_items (order_id, item_id, title, price, qty) VALUES (?, ?, ?, ?, ?)', id, l.item_id ?? null, l.title, l.price, l.qty);
+      db.run("INSERT INTO order_events (order_id, status, at) VALUES (?, 'PENDING', ?)", id, now);
+      if (payment === 'WALLET') moveMoney(buyer.id, -total, 'ORDER_PAY', `Bayaran ${code} – ${label}`, code);
+      return db.one('SELECT * FROM orders WHERE id = ?', id);
+    });
+    if (payment === 'WALLET') pushBalance(buyer.id);
+    const what = { ORDER: 'Pesanan', RIDE: 'Tempahan trip', SERVICE: 'Tempahan servis', RENTAL: 'Tempahan sewa kereta', ITEM: 'Pembelian', TICKET: 'Pembelian tiket', ROOM: 'Deposit tempahan bilik' }[kind] || 'Pesanan';
+    notify(sellerId, `${what} baharu ${order.code} 🛎️`, `${buyer.name} – ${rm(total)} (${payment === 'WALLET' ? 'Dompet' : 'Tunai'}).`, `#/orders/${order.id}`);
+    broadcastOrder(order);
+    return order;
+  }
+
+  // Listing stock follows its orders: reserved on purchase, restocked on cancel, sold on completion.
+  function syncListing(o, next) {
+    if (!o.listing_id) return;
+    const qty = db.one('SELECT COALESCE(SUM(qty), 0) AS n FROM order_items WHERE order_id = ?', o.id).n;
+    const l = db.one('SELECT * FROM listings WHERE id = ?', o.listing_id);
+    if (!l) return;
+    if (next === 'CANCELLED' || next === 'REJECTED') {
+      const stock = l.stock == null ? null : l.stock + qty;
+      db.run("UPDATE listings SET stock = ?, status = CASE WHEN status IN ('RESERVED','SOLD') THEN 'ACTIVE' ELSE status END, updated_at = ? WHERE id = ?", stock, Date.now(), l.id);
+    } else if (next === 'COMPLETED' && l.stock === 0 && l.kind === 'ITEM') {
+      db.run("UPDATE listings SET status = 'SOLD', updated_at = ? WHERE id = ?", Date.now(), l.id);
+    } else if (next === 'COMPLETED' && l.kind === 'ROOM') {
+      db.run("UPDATE listings SET status = 'CLOSED', updated_at = ? WHERE id = ?", Date.now(), l.id);
+    }
   }
 
   route('POST', '/api/orders', ({ user, body }) => {
@@ -378,26 +411,15 @@ export function createApi({ db, uploadsDir, demo }) {
       if (!item || !item.available) fail(400, 'Sebahagian item tidak lagi tersedia. Sila kemas kini troli.');
       return { item, qty: sen(l.qty, 'Kuantiti', { min: 1, max: 99 }) };
     });
-    const subtotal = picked.reduce((s, p) => s + p.item.price * p.qty, 0);
+    if (picked.some((p) => p.item.kind !== 'PRODUCT')) fail(400, 'Trip & servis perlu ditempah melalui butang Tempah.');
+    const subtotal = picked.reduce((sum, p) => sum + p.item.price * p.qty, 0);
     if (subtotal < shop.min_order) fail(400, `Pesanan minimum kedai ini ialah ${rm(shop.min_order)}.`);
-    const deliveryFee = fulfilment === 'DELIVERY' ? shop.delivery_fee : 0;
-    const total = subtotal + deliveryFee;
-    const commission = payment === 'WALLET' ? Math.round(total * (Number(db.getSetting('commission_pct')) || 0) / 100) : 0;
-
-    const order = db.tx(() => {
-      const now = Date.now();
-      const code = 'UH' + now.toString(36).toUpperCase().slice(-6) + randomToken(2).replace(/[^A-Za-z0-9]/g, 'X').toUpperCase().slice(0, 2);
-      const id = Number(db.run(`INSERT INTO orders (code, user_id, shop_id, status, payment, fulfilment, address, note, subtotal, delivery_fee, total, commission, payout, created_at, updated_at)
-        VALUES (?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        code, user.id, shop.id, payment, fulfilment, address, note, subtotal, deliveryFee, total, commission, payment === 'WALLET' ? 'HELD' : 'NONE', now, now).lastInsertRowid);
-      for (const p of picked) db.run('INSERT INTO order_items (order_id, item_id, title, price, qty) VALUES (?, ?, ?, ?, ?)', id, p.item.id, p.item.title, p.item.price, p.qty);
-      db.run("INSERT INTO order_events (order_id, status, at) VALUES (?, 'PENDING', ?)", id, now);
-      if (payment === 'WALLET') moveMoney(user.id, -total, 'ORDER_PAY', `Bayaran pesanan ${code} – ${shop.name}`, code);
-      return db.one('SELECT * FROM orders WHERE id = ?', id);
+    const order = createOrder({
+      buyer: user, sellerId: shop.owner_id, shopId: shop.id, kind: 'ORDER', payment, fulfilment, address, note,
+      deliveryFee: fulfilment === 'DELIVERY' ? shop.delivery_fee : 0,
+      lines: picked.map((p) => ({ item_id: p.item.id, title: p.item.title, price: p.item.price, qty: p.qty })),
+      label: shop.name
     });
-    if (payment === 'WALLET') pushBalance(user.id);
-    notify(shop.owner_id, `Pesanan baharu ${order.code} 🛎️`, `${user.name} membuat pesanan ${rm(total)} (${payment === 'WALLET' ? 'Dompet' : 'Tunai'}).`, `#/orders/${order.id}`);
-    broadcastOrder(order);
     return { order: orderOut(order) };
   });
 
@@ -409,10 +431,9 @@ export function createApi({ db, uploadsDir, demo }) {
   function loadOrder(id, user) {
     const o = db.one('SELECT * FROM orders WHERE id = ?', Number(id));
     if (!o) fail(404, 'Pesanan tidak dijumpai.');
-    const shop = db.one('SELECT owner_id FROM shops WHERE id = ?', o.shop_id);
-    const role = o.user_id === user.id ? 'buyer' : shop.owner_id === user.id ? 'seller' : user.role === 'admin' ? 'admin' : null;
+    const role = o.user_id === user.id ? 'buyer' : o.seller_id === user.id ? 'seller' : user.role === 'admin' ? 'admin' : null;
     if (!role) fail(404, 'Pesanan tidak dijumpai.');
-    return { o, role, ownerId: shop.owner_id };
+    return { o, role, ownerId: o.seller_id };
   }
 
   route('GET', '/api/orders/:id', ({ user, params }) => {
@@ -438,6 +459,7 @@ export function createApi({ db, uploadsDir, demo }) {
     const holdForBuyer = wallet && next === 'COMPLETED' && role === 'seller';
     db.tx(() => {
       setOrderStatus(o, next, { reason: reason || null });
+      syncListing(o, next);
       if (!wallet) return;
       if (next === 'COMPLETED') {
         if (holdForBuyer) db.run('UPDATE orders SET release_at = ? WHERE id = ?', Date.now() + DISPUTE_WINDOW, o.id);
@@ -453,7 +475,7 @@ export function createApi({ db, uploadsDir, demo }) {
     const refundNote = wallet && (next === 'CANCELLED' || next === 'REJECTED') ? ` ${rm(o.total)} telah dipulangkan ke dompet.` : '';
     const buyerNote = holdForBuyer ? `Bayaran akan dilepaskan kepada peniaga dalam 48 jam. Ada masalah? Laporkan sebelum itu.` : '';
     if (role !== 'buyer') notify(o.user_id, `Pesanan ${o.code} ${label}`, (reason ? `Sebab: ${reason}. ` : '') + refundNote + buyerNote, link);
-    if (role !== 'seller') notify(ownerId, `Pesanan ${o.code} ${label}`, next === 'COMPLETED' && wallet ? `${rm(o.total - o.commission)} dikreditkan ke dompet anda.` : (reason ? `Sebab: ${reason}` : ''), link);
+    if (role !== 'seller') notify(ownerId, `Pesanan ${o.code} ${label}`, next === 'COMPLETED' && wallet ? `${rm(sellerShare(o))} dikreditkan ke dompet anda.` : (reason ? `Sebab: ${reason}` : ''), link);
     broadcastOrder(o);
     return { order: orderOut(db.one('SELECT * FROM orders WHERE id = ?', o.id)) };
   });
@@ -462,6 +484,7 @@ export function createApi({ db, uploadsDir, demo }) {
     need(user);
     const { o, role, ownerId } = loadOrder(params.id, user);
     if (role !== 'buyer') fail(403, 'Hanya pembeli boleh memberi ulasan.');
+    if (!o.shop_id) fail(400, 'Ulasan hanya untuk pesanan kedai.');
     if (o.status !== 'COMPLETED') fail(400, 'Ulasan hanya boleh diberi selepas pesanan selesai.');
     if (db.one('SELECT id FROM reviews WHERE order_id = ?', o.id)) fail(409, 'Anda sudah memberi ulasan untuk pesanan ini.');
     const rating = sen(body.rating, 'Penilaian', { min: 1, max: 5 });
@@ -479,7 +502,8 @@ export function createApi({ db, uploadsDir, demo }) {
     if (o.status !== 'COMPLETED' || o.payout !== 'HELD') fail(400, 'Tiada bayaran yang sedang dipegang untuk pesanan ini.');
     db.tx(() => releaseToSeller(o, ' – disahkan pembeli'));
     pushBalance(ownerId);
-    notify(ownerId, `Pembeli mengesahkan pesanan ${o.code} ✅`, `${rm(o.total - o.commission)} dikreditkan ke dompet anda.`, `#/orders/${o.id}`);
+    pushBalance(o.user_id);
+    notify(ownerId, `Pembeli mengesahkan pesanan ${o.code} ✅`, `${rm(sellerShare(o))} dikreditkan ke dompet anda.`, `#/orders/${o.id}`);
     broadcastOrder(o);
     return { order: orderOut(db.one('SELECT * FROM orders WHERE id = ?', o.id)) };
   });
@@ -535,15 +559,23 @@ export function createApi({ db, uploadsDir, demo }) {
   function shopFields(body, base = {}) {
     return {
       name: text(body.name ?? base.name, 'Nama kedai', { min: 3, max: 80 }),
-      category: oneOf(body.category ?? base.category, CATEGORIES, 'Kategori'),
+      category: oneOf(body.category ?? base.category, cats('shop'), 'Kategori'),
       campus: oneOf(body.campus ?? base.campus, Object.keys(CAMPUSES), 'Kampus'),
       description: text(body.description ?? base.description, 'Penerangan', { min: 10, max: 600 }),
       image: body.image !== undefined ? uploadRef(body.image) : base.image ?? null,
       hours: text(body.hours ?? base.hours, 'Waktu operasi', { max: 80, optional: true }),
       delivery_fee: sen(body.delivery_fee ?? base.delivery_fee ?? 0, 'Caj penghantaran', { max: 5000 }),
       min_order: sen(body.min_order ?? base.min_order ?? 0, 'Pesanan minimum', { max: 100000 }),
-      allow_cash: body.allow_cash !== undefined ? (body.allow_cash ? 1 : 0) : base.allow_cash ?? 1
+      allow_cash: body.allow_cash !== undefined ? (body.allow_cash ? 1 : 0) : base.allow_cash ?? 1,
+      booking_hours: body.booking_hours !== undefined ? bookingHours(body.booking_hours) : base.booking_hours ?? null
     };
+  }
+  function bookingHours(v) {
+    if (v == null || v === '') return null;
+    const days = Array.isArray(v.days) ? [...new Set(v.days.map(Number))].filter((d) => d >= 0 && d <= 6) : [];
+    const hhmm = /^([01]\d|2[0-3]):[0-5]\d$/;
+    if (!days.length || !hhmm.test(v.start) || !hhmm.test(v.end) || v.start >= v.end) fail(400, 'Waktu tempahan tidak sah.');
+    return JSON.stringify({ days: days.sort(), start: v.start, end: v.end });
   }
   const pkgById = (id) => db.getSetting('packages').find((p) => p.id === id) || fail(400, 'Pakej tidak sah.');
 
@@ -554,8 +586,9 @@ export function createApi({ db, uploadsDir, demo }) {
     const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
     const sum = (where, ...p) => db.one(`SELECT COUNT(*) AS n, COALESCE(SUM(total - commission), 0) AS total FROM orders WHERE shop_id = ? AND ${where}`, s.id, ...p);
     return {
-      shop: { ...shopOut(s), package: s.package, license_until: s.license_until, license_fee: s.license_fee, reject_reason: s.reject_reason, created_at: s.created_at },
+      shop: { ...shopOut(s), package: s.package, license_until: s.license_until, license_fee: s.license_fee, reject_reason: s.reject_reason, created_at: s.created_at, booking_hours: s.booking_hours ? JSON.parse(s.booking_hours) : null },
       items: db.all('SELECT * FROM items WHERE shop_id = ? ORDER BY id', s.id),
+      vehicles: db.all('SELECT * FROM vehicles WHERE shop_id = ? ORDER BY id', s.id),
       stats: {
         today: sum("status = 'COMPLETED' AND created_at >= ?", dayStart.getTime()),
         all: sum("status = 'COMPLETED'"),
@@ -615,27 +648,31 @@ export function createApi({ db, uploadsDir, demo }) {
       return { ok: true };
     }
     const f = shopFields(body, s);
-    db.run('UPDATE shops SET name=?, category=?, campus=?, description=?, image=?, hours=?, delivery_fee=?, min_order=?, allow_cash=?, is_open=? WHERE id = ?',
-      f.name, f.category, f.campus, f.description, f.image, f.hours, f.delivery_fee, f.min_order, f.allow_cash, body.is_open !== undefined ? (body.is_open ? 1 : 0) : s.is_open, s.id);
+    db.run('UPDATE shops SET name=?, category=?, campus=?, description=?, image=?, hours=?, delivery_fee=?, min_order=?, allow_cash=?, booking_hours=?, is_open=? WHERE id = ?',
+      f.name, f.category, f.campus, f.description, f.image, f.hours, f.delivery_fee, f.min_order, f.allow_cash, f.booking_hours, body.is_open !== undefined ? (body.is_open ? 1 : 0) : s.is_open, s.id);
     return { ok: true };
   });
 
   function itemFields(body, base = {}) {
-    return {
+    const f = {
       title: text(body.title ?? base.title, 'Nama item', { min: 2, max: 100 }),
       description: text(body.description ?? base.description, 'Penerangan', { max: 300, optional: true }),
       price: sen(body.price ?? base.price, 'Harga', { min: 1, max: 1000000 }),
       image: body.image !== undefined ? uploadRef(body.image) : base.image ?? null,
-      available: body.available !== undefined ? (body.available ? 1 : 0) : base.available ?? 1
+      available: body.available !== undefined ? (body.available ? 1 : 0) : base.available ?? 1,
+      kind: oneOf(body.kind ?? base.kind ?? 'PRODUCT', ['PRODUCT', 'ROUTE', 'SERVICE'], 'Jenis item'),
+      duration_min: null
     };
+    if (f.kind === 'SERVICE') f.duration_min = sen(body.duration_min ?? base.duration_min, 'Tempoh servis (minit)', { min: 15, max: 480 });
+    return f;
   }
   route('POST', '/api/seller/items', ({ user, body }) => {
     need(user);
     const s = needShop(user);
     if (db.one('SELECT COUNT(*) AS n FROM items WHERE shop_id = ?', s.id).n >= 200) fail(400, 'Had maksimum 200 item.');
     const f = itemFields(body);
-    const id = Number(db.run('INSERT INTO items (shop_id, title, description, price, image, available, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      s.id, f.title, f.description, f.price, f.image, f.available, Date.now()).lastInsertRowid);
+    const id = Number(db.run('INSERT INTO items (shop_id, title, description, price, image, available, kind, duration_min, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      s.id, f.title, f.description, f.price, f.image, f.available, f.kind, f.duration_min, Date.now()).lastInsertRowid);
     return { item: db.one('SELECT * FROM items WHERE id = ?', id) };
   });
   route('PATCH', '/api/seller/items/:id', ({ user, params, body }) => {
@@ -643,7 +680,7 @@ export function createApi({ db, uploadsDir, demo }) {
     const s = needShop(user);
     const it = db.one('SELECT * FROM items WHERE id = ? AND shop_id = ?', Number(params.id), s.id) || fail(404, 'Item tidak dijumpai.');
     const f = itemFields(body, it);
-    db.run('UPDATE items SET title=?, description=?, price=?, image=?, available=? WHERE id = ?', f.title, f.description, f.price, f.image, f.available, it.id);
+    db.run('UPDATE items SET title=?, description=?, price=?, image=?, available=?, kind=?, duration_min=? WHERE id = ?', f.title, f.description, f.price, f.image, f.available, f.kind, f.duration_min, it.id);
     return { item: db.one('SELECT * FROM items WHERE id = ?', it.id) };
   });
   route('DELETE', '/api/seller/items/:id', ({ user, params }) => {
@@ -758,6 +795,9 @@ export function createApi({ db, uploadsDir, demo }) {
     } else if (body.shopId) {
       const s = db.one('SELECT owner_id FROM shops WHERE id = ?', Number(body.shopId)) || fail(404, 'Kedai tidak dijumpai.');
       otherId = s.owner_id;
+    } else if (body.listingId) {
+      const l = db.one("SELECT id, user_id, title FROM listings WHERE id = ? AND status != 'REMOVED'", Number(body.listingId)) || fail(404, 'Iklan tidak dijumpai.');
+      otherId = l.user_id;
     } else if (body.orderId) {
       const { o, ownerId } = loadOrder(body.orderId, user);
       otherId = o.user_id === user.id ? ownerId : o.user_id;
@@ -768,6 +808,11 @@ export function createApi({ db, uploadsDir, demo }) {
     if (otherId === user.id) fail(400, 'Anda tidak boleh berbual dengan diri sendiri.');
     if (!db.one('SELECT id FROM users WHERE id = ?', otherId)) fail(404, 'Pengguna tidak dijumpai.');
     const c = conversationFor(user.id, otherId, kind);
+    if (body.listingId) {
+      const l = db.one('SELECT title FROM listings WHERE id = ?', Number(body.listingId));
+      const ref = `Berkenaan iklan: ${l.title}`;
+      if (!db.one('SELECT id FROM messages WHERE conversation_id = ? AND body = ?', c.id, ref)) sendMessage(c, user.id, ref, null);
+    }
     if (body.orderId) {
       const o = db.one('SELECT code FROM orders WHERE id = ?', Number(body.orderId));
       const hasRef = db.one('SELECT id FROM messages WHERE conversation_id = ? AND body LIKE ?', c.id, `%${o.code}%`);
@@ -842,7 +887,8 @@ export function createApi({ db, uploadsDir, demo }) {
         shops: n("SELECT COUNT(*) AS n FROM shops WHERE status = 'PENDING'"),
         topups: n("SELECT COUNT(*) AS n FROM topups WHERE status = 'PENDING'"),
         withdrawals: n("SELECT COUNT(*) AS n FROM withdrawals WHERE status = 'PENDING'"),
-        disputes: n("SELECT COUNT(*) AS n FROM disputes WHERE status = 'OPEN'")
+        disputes: n("SELECT COUNT(*) AS n FROM disputes WHERE status = 'OPEN'"),
+        listings: n("SELECT COUNT(*) AS n FROM listings WHERE reports > 0 AND status != 'REMOVED'")
       },
       orders: {
         total: n('SELECT COUNT(*) AS n FROM orders'),
@@ -851,8 +897,9 @@ export function createApi({ db, uploadsDir, demo }) {
       },
       // Money held in user wallets = liability that must match the platform bank balance.
       float: db.one('SELECT COALESCE(SUM(balance), 0) AS n FROM users').n,
-      recent: db.all(`SELECT o.code, o.total, o.status, o.payment, o.created_at, s.name AS shop, u.name AS buyer
-                      FROM orders o JOIN shops s ON s.id = o.shop_id JOIN users u ON u.id = o.user_id ORDER BY o.id DESC LIMIT 8`)
+      recent: db.all(`SELECT o.id, o.code, o.kind, o.total, o.status, o.payment, o.created_at, COALESCE(s.name, l.title, sv.name) AS shop, u.name AS buyer
+                      FROM orders o LEFT JOIN shops s ON s.id = o.shop_id LEFT JOIN listings l ON l.id = o.listing_id
+                      JOIN users sv ON sv.id = o.seller_id JOIN users u ON u.id = o.user_id ORDER BY o.id DESC LIMIT 8`)
     };
   });
 
@@ -911,13 +958,17 @@ export function createApi({ db, uploadsDir, demo }) {
     if (o.payout !== 'HELD') fail(409, 'Bayaran pesanan ini tidak lagi dipegang.');
     const outcome = oneOf(body.outcome, ['REFUND', 'RELEASE', 'SPLIT'], 'Keputusan');
     const note = text(body.note, 'Nota keputusan', { min: 5, max: 500 });
-    const refund = outcome === 'REFUND' ? o.total : outcome === 'RELEASE' ? 0 : sen(body.refund, 'Jumlah pulangan', { min: 1, max: o.total - 1 });
+    const refund = outcome === 'REFUND' ? o.total : outcome === 'RELEASE' ? o.deposit : sen(body.refund, 'Jumlah pulangan', { min: 0, max: o.total - 1 });
     const ownerId = ownerOf(o);
 
     db.tx(() => {
       if (outcome === 'REFUND') {
         refundBuyer(o, o.total, ' – keputusan pertikaian');
         setOrderStatus(o, 'CANCELLED', { reason: `Pertikaian: ${note}` });
+        syncListing(o, 'CANCELLED');
+      } else if (outcome === 'RELEASE') {
+        releaseToSeller(o, ' – keputusan pertikaian');
+        setOrderStatus(o, 'COMPLETED');
       } else {
         // Commission only applies to the share the seller keeps.
         const sellerShare = o.total - refund;
@@ -932,7 +983,7 @@ export function createApi({ db, uploadsDir, demo }) {
     pushBalance(o.user_id); pushBalance(ownerId);
     const link = `#/orders/${o.id}`;
     const toBuyer = { REFUND: `${rm(o.total)} dipulangkan sepenuhnya ke dompet anda.`, RELEASE: 'Bayaran dilepaskan kepada peniaga.', SPLIT: `${rm(refund)} dipulangkan ke dompet anda.` }[outcome];
-    const toSeller = { REFUND: 'Bayaran dipulangkan kepada pembeli.', RELEASE: `${rm(o.total - o.commission)} dikreditkan ke dompet anda.`, SPLIT: `Sebahagian bayaran (${rm(o.total - refund)}) dikreditkan kepada anda.` }[outcome];
+    const toSeller = { REFUND: 'Bayaran dipulangkan kepada pembeli.', RELEASE: `${rm(sellerShare(o))} dikreditkan ke dompet anda.`, SPLIT: `Sebahagian bayaran (${rm(o.total - refund)}) dikreditkan kepada anda.` }[outcome];
     notify(o.user_id, `Keputusan laporan ${o.code}`, `${toBuyer} Nota admin: ${note}`, link);
     notify(ownerId, `Keputusan laporan ${o.code}`, `${toSeller} Nota admin: ${note}`, link);
     broadcastOrder(o);
@@ -1053,6 +1104,11 @@ export function createApi({ db, uploadsDir, demo }) {
 
   // ---------- dispatcher ----------
   function need(user) { if (!user) fail(401, 'Sila log masuk terlebih dahulu.'); }
+
+  registerModules({
+    db, route, need, needAdmin, notify, notifyAdmins, moveMoney, pushBalance, createOrder, orderOut, isListed, shopOut,
+    conversationFor, sendMessage, cats, catEmoji, CAMPUSES
+  });
 
   return { routes, need, DEFAULT_SETTINGS };
 }

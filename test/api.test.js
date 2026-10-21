@@ -111,7 +111,7 @@ test('rejected order refunds the buyer in full', async () => {
 
 test('cannot overspend the wallet or order below minimum', async () => {
   const stu = await loginAs('pelajar@demo.upsi');
-  const shop = (await stu('GET', '/api/shops')).body.shops.find((s) => s.name.startsWith('Abang Prebet'));
+  const shop = (await stu('GET', '/api/shops')).body.shops.find((s) => s.name.startsWith('Runner Print'));
   const items = (await stu('GET', `/api/shops/${shop.id}`)).body.items;
   const pricey = items.reduce((a, b) => (a.price > b.price ? a : b));
   const r = await stu('POST', '/api/orders', { shopId: shop.id, items: [{ id: pricey.id, qty: 50 }], payment: 'WALLET', fulfilment: 'PICKUP' });
