@@ -34,6 +34,8 @@ Anda hanya perlu dua fail dari folder [`gas/dist/`](gas/dist): `Code.gs` dan `In
 7. Buka URL itu. Pelawat pertama akan diminta **mencipta akaun admin**, jadi buat langkah ini sendiri dahulu.
 8. Di *Panel Admin › Tetapan*, isi akaun bank atau kod QR untuk tambah nilai dompet.
 
+**Pautan GitHub Pages:** `index.html` di root repo membawa pelawat `https://dynoz769.github.io/UPSIHub/` terus ke aplikasi. Jika anda membuat deployment baharu dengan URL lain, tukar URL dalam `index.html`.
+
 **Kemas kini kod kemudian:** tampal fail baharu, kemudian *Deploy › Manage deployments › ✏️ › Version: New version › Deploy*. URL kekal sama.
 
 Fungsi tambahan yang boleh dijalankan dari editor:
