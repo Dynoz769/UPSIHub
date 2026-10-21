@@ -3,7 +3,7 @@ import path from 'node:path';
 import { hashPassword, verifyPassword, randomToken, rateLimit } from './security.js';
 import { subscribe, push, isOnline } from './realtime.js';
 import { DEFAULT_SETTINGS } from './db.js';
-import { HttpError, fail, text, sen, oneOf, uploadRef, rm } from './validate.js';
+import { HttpError, fail, text, sen, oneOf, uploadRef, rm, myDate, MY_OFFSET } from './validate.js';
 import { registerModules, LISTING_KINDS, LISTING_META } from './modules.js';
 
 export const CAMPUSES = {
@@ -98,7 +98,8 @@ export function createApi({ db, uploadsDir, demo }) {
       items: db.all('SELECT item_id, title, price, qty FROM order_items WHERE order_id = ?', o.id),
       events: db.all('SELECT status, at FROM order_events WHERE order_id = ? ORDER BY id', o.id),
       dispute: db.one('SELECT * FROM disputes WHERE order_id = ?', o.id) || null,
-      review: db.one('SELECT rating, comment, created_at FROM reviews WHERE order_id = ?', o.id) || null
+      review: db.one('SELECT rating, comment, created_at FROM reviews WHERE order_id = ?', o.id)
+        || db.one('SELECT rating, comment, created_at FROM seller_reviews WHERE order_id = ?', o.id) || null
     };
   }
 
@@ -457,17 +458,30 @@ export function createApi({ db, uploadsDir, demo }) {
     const wallet = o.payment === 'WALLET';
     // When the seller (not the buyer) marks it done, the buyer gets a window to report a problem.
     const holdForBuyer = wallet && next === 'COMPLETED' && role === 'seller';
+    const openRental = o.kind === 'RENTAL' && o.end_at == null && next === 'COMPLETED';
+    const returnAt = openRental ? rentalReturnDate(o, role === 'seller' ? body.return_date : null) : null;
+    let settlement = null;
+    let cur = o;
     db.tx(() => {
-      setOrderStatus(o, next, { reason: reason || null });
-      syncListing(o, next);
+      if (openRental) {
+        settlement = settleOpenRental(o, returnAt);
+        cur = db.one('SELECT * FROM orders WHERE id = ?', o.id);
+      }
+      setOrderStatus(cur, next, { reason: reason || null });
+      syncListing(cur, next);
       if (!wallet) return;
       if (next === 'COMPLETED') {
         if (holdForBuyer) db.run('UPDATE orders SET release_at = ? WHERE id = ?', Date.now() + DISPUTE_WINDOW, o.id);
-        else releaseToSeller(o);
+        else releaseToSeller(cur);
       } else if (next === 'CANCELLED' || next === 'REJECTED') {
-        refundBuyer(o);
+        refundBuyer(cur);
       }
     });
+    if (settlement) {
+      const s2 = settlement;
+      notify(o.user_id, `Sewa ${o.code}: ${s2.days} hari`, `Jumlah sewa ${rm(s2.rent)}.${s2.fromWallet ? ` ${rm(s2.fromWallet)} ditolak dari dompet.` : ''}${s2.fromDeposit ? ` ${rm(s2.fromDeposit)} ditolak dari deposit.` : ''}${s2.unpaid ? ` Baki ${rm(s2.unpaid)} belum dibayar – sila selesaikan dengan pemilik.` : ''}`, `#/orders/${o.id}`);
+      if (s2.unpaid) notify(ownerId, `Baki sewa ${o.code} belum dibayar`, `${rm(s2.unpaid)} melebihi baki dompet & deposit penyewa. Hubungi penyewa atau admin.`, `#/orders/${o.id}`);
+    }
     if (wallet) { pushBalance(o.user_id); pushBalance(ownerId); }
 
     const link = `#/orders/${o.id}`;
@@ -475,7 +489,7 @@ export function createApi({ db, uploadsDir, demo }) {
     const refundNote = wallet && (next === 'CANCELLED' || next === 'REJECTED') ? ` ${rm(o.total)} telah dipulangkan ke dompet.` : '';
     const buyerNote = holdForBuyer ? `Bayaran akan dilepaskan kepada peniaga dalam 48 jam. Ada masalah? Laporkan sebelum itu.` : '';
     if (role !== 'buyer') notify(o.user_id, `Pesanan ${o.code} ${label}`, (reason ? `Sebab: ${reason}. ` : '') + refundNote + buyerNote, link);
-    if (role !== 'seller') notify(ownerId, `Pesanan ${o.code} ${label}`, next === 'COMPLETED' && wallet ? `${rm(sellerShare(o))} dikreditkan ke dompet anda.` : (reason ? `Sebab: ${reason}` : ''), link);
+    if (role !== 'seller') notify(ownerId, `Pesanan ${o.code} ${label}`, next === 'COMPLETED' && wallet ? `${rm(sellerShare(cur))} dikreditkan ke dompet anda.` : (reason ? `Sebab: ${reason}` : ''), link);
     broadcastOrder(o);
     return { order: orderOut(db.one('SELECT * FROM orders WHERE id = ?', o.id)) };
   });
@@ -484,14 +498,62 @@ export function createApi({ db, uploadsDir, demo }) {
     need(user);
     const { o, role, ownerId } = loadOrder(params.id, user);
     if (role !== 'buyer') fail(403, 'Hanya pembeli boleh memberi ulasan.');
-    if (!o.shop_id) fail(400, 'Ulasan hanya untuk pesanan kedai.');
     if (o.status !== 'COMPLETED') fail(400, 'Ulasan hanya boleh diberi selepas pesanan selesai.');
-    if (db.one('SELECT id FROM reviews WHERE order_id = ?', o.id)) fail(409, 'Anda sudah memberi ulasan untuk pesanan ini.');
+    if (db.one('SELECT id FROM reviews WHERE order_id = ?', o.id) || db.one('SELECT id FROM seller_reviews WHERE order_id = ?', o.id)) {
+      fail(409, 'Anda sudah memberi ulasan untuk pesanan ini.');
+    }
     const rating = sen(body.rating, 'Penilaian', { min: 1, max: 5 });
     const comment = text(body.comment, 'Ulasan', { max: 500, optional: true });
-    db.run('INSERT INTO reviews (order_id, shop_id, user_id, rating, comment, created_at) VALUES (?, ?, ?, ?, ?, ?)', o.id, o.shop_id, user.id, rating, comment, Date.now());
-    notify(ownerId, `Ulasan baharu ${'★'.repeat(rating)}`, comment || `${user.name} memberi ${rating} bintang.`, '#/seller');
+    // Shop orders rate the shop; student-to-student orders rate the seller personally.
+    if (o.shop_id) db.run('INSERT INTO reviews (order_id, shop_id, user_id, rating, comment, created_at) VALUES (?, ?, ?, ?, ?, ?)', o.id, o.shop_id, user.id, rating, comment, Date.now());
+    else db.run('INSERT INTO seller_reviews (order_id, seller_id, user_id, rating, comment, created_at) VALUES (?, ?, ?, ?, ?, ?)', o.id, o.seller_id, user.id, rating, comment, Date.now());
+    notify(ownerId, `Ulasan baharu ${'★'.repeat(rating)}`, comment || `${user.name} memberi ${rating} bintang.`, o.shop_id ? '#/seller' : `#/u/${o.seller_id}`);
     return { ok: true };
+  });
+
+  // ---------- open-ended car rentals ----------
+  // Return day for a rental with no planned end: the seller's stated date, else today (Malaysia time).
+  function rentalReturnDate(o, v) {
+    const today = myDate(new Date(Date.now() + MY_OFFSET).toISOString().slice(0, 10), 'Hari ini');
+    const ret = v ? myDate(v, 'Tarikh pulang') : today;
+    if (ret < o.start_at) fail(400, 'Tarikh pulang tidak boleh sebelum tarikh ambil.');
+    if (ret > today) fail(400, 'Tarikh pulang tidak boleh pada masa hadapan.');
+    return ret;
+  }
+  // Charges the actual days used. The renter prepaid one day; the rest comes from their
+  // wallet, then from the deposit. Must run inside db.tx().
+  function settleOpenRental(o, returnAt) {
+    const line = db.one('SELECT * FROM order_items WHERE order_id = ? LIMIT 1', o.id);
+    const days = Math.max(1, Math.round((returnAt - o.start_at) / 864e5));
+    const rent = days * line.price;
+    const extra = Math.max(0, rent - o.subtotal);
+    const balance = db.one('SELECT balance FROM users WHERE id = ?', o.user_id).balance;
+    const fromWallet = Math.min(balance, extra);
+    if (fromWallet) moveMoney(o.user_id, -fromWallet, 'ORDER_PAY', `Caj sewa tambahan ${o.code} (${days} hari)`, o.code);
+    const fromDeposit = Math.min(o.deposit, extra - fromWallet);
+    const unpaid = extra - fromWallet - fromDeposit;
+    const subtotal = o.subtotal + fromWallet + fromDeposit;
+    const pct = Number(db.getSetting('commission_pct')) || 0;
+    db.run('UPDATE order_items SET qty = ? WHERE id = ?', days, line.id);
+    db.run(`UPDATE orders SET end_at = ?, subtotal = ?, deposit = ?, total = ?, commission = ?,
+            note = CASE WHEN ? > 0 THEN TRIM(note || ' [Baki sewa belum dibayar: ' || ? || ']') ELSE note END WHERE id = ?`,
+      returnAt, subtotal, o.deposit - fromDeposit, subtotal + o.deposit - fromDeposit, Math.round(subtotal * pct / 100), unpaid, rm(unpaid), o.id);
+    return { days, rent, fromWallet, fromDeposit, unpaid };
+  }
+
+  function sellerRating(userId) {
+    const r = db.one('SELECT ROUND(AVG(rating), 1) AS avg, COUNT(*) AS n FROM seller_reviews WHERE seller_id = ?', userId);
+    return { rating: r.avg || 0, reviews: r.n };
+  }
+  // Public profile of an individual seller with their ratings & active listings.
+  route('GET', '/api/users/:id', ({ params }) => {
+    const u = db.one("SELECT id, name, avatar, campus, created_at FROM users WHERE id = ? AND status = 'active'", Number(params.id)) || fail(404, 'Pengguna tidak dijumpai.');
+    return {
+      user: { ...u, online: isOnline(u.id), ...sellerRating(u.id), sold: db.one("SELECT COUNT(*) AS n FROM orders WHERE seller_id = ? AND listing_id IS NOT NULL AND status = 'COMPLETED'", u.id).n },
+      reviews: db.all(`SELECT r.rating, r.comment, r.created_at, b.name, l.title FROM seller_reviews r JOIN users b ON b.id = r.user_id
+                       JOIN orders o ON o.id = r.order_id LEFT JOIN listings l ON l.id = o.listing_id
+                       WHERE r.seller_id = ? ORDER BY r.created_at DESC LIMIT 30`, u.id)
+    };
   });
 
   // Buyer confirms receipt of a seller-completed order → release now instead of waiting.
@@ -1107,7 +1169,7 @@ export function createApi({ db, uploadsDir, demo }) {
 
   registerModules({
     db, route, need, needAdmin, notify, notifyAdmins, moveMoney, pushBalance, createOrder, orderOut, isListed, shopOut,
-    conversationFor, sendMessage, cats, catEmoji, CAMPUSES
+    conversationFor, sendMessage, cats, catEmoji, CAMPUSES, sellerRating
   });
 
   return { routes, need, DEFAULT_SETTINGS };

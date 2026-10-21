@@ -30,7 +30,7 @@ const hhmmToMin = (s) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
 const minToHhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 export function registerModules(ctx) {
-  const { db, route, need, needAdmin, notify, notifyAdmins, createOrder, orderOut, isListed, shopOut, cats, CAMPUSES } = ctx;
+  const { db, route, need, needAdmin, notify, notifyAdmins, createOrder, orderOut, isListed, shopOut, cats, CAMPUSES, sellerRating } = ctx;
 
   const listedShop = (id) => {
     const s = db.one('SELECT * FROM shops WHERE id = ?', Number(id));
@@ -118,8 +118,9 @@ export function registerModules(ctx) {
     return { id: v.id, shop_id: v.shop_id, model: v.model, plate: v.plate, seats: v.seats, transmission: v.transmission, image: v.image,
       daily_rate: v.daily_rate, deposit: v.deposit, notes: v.notes, active: !!v.active, ...extra };
   }
-  const bookedRanges = (vehicleId) => db.all(`SELECT start_at, end_at FROM orders WHERE vehicle_id = ? AND status IN ${ACTIVE_STATES} AND end_at > ? ORDER BY start_at`,
-    vehicleId, Date.now() - DAY);
+  // end_at is NULL for a rental with no planned return date: the car stays blocked until returned.
+  const bookedRanges = (vehicleId) => db.all(`SELECT start_at, end_at FROM orders WHERE vehicle_id = ? AND status IN ${ACTIVE_STATES}
+                                             AND (end_at IS NULL OR end_at > ?) ORDER BY start_at`, vehicleId, Date.now() - DAY);
 
   route('GET', '/api/vehicles', ({ query }) => {
     const campus = query.get('campus');
@@ -190,11 +191,12 @@ export function registerModules(ctx) {
       const shop = listedShop(v.shop_id);
       if (shop.owner_id === user.id) fail(400, 'Anda tidak boleh menyewa kenderaan sendiri.');
       const start = myDate(body.start_date, 'Tarikh ambil');
-      const end = myDate(body.end_date, 'Tarikh pulang');
+      // No return date = open-ended: pay 1 day + deposit now, the rest is settled on return.
+      const end = body.end_date ? myDate(body.end_date, 'Tarikh pulang') : null;
       const today = myDate(new Date(Date.now() + MY_OFFSET).toISOString().slice(0, 10), 'Hari ini');
       if (start < today) fail(400, 'Tarikh ambil sudah lepas.');
       if (start > today + 90 * DAY) fail(400, 'Tempahan hanya boleh dibuat 90 hari lebih awal.');
-      const days = Math.round((end - start) / DAY);
+      const days = end == null ? 1 : Math.round((end - start) / DAY);
       if (days < 1 || days > 30) fail(400, 'Tempoh sewa mesti antara 1 hingga 30 hari.');
       const pickup = text(body.pickup, 'Lokasi & masa ambil', { max: 150, optional: true });
       const order = createOrder({
@@ -202,7 +204,8 @@ export function registerModules(ctx) {
         lines: [{ title: `Sewa ${v.model} (${v.plate})`, price: v.daily_rate, qty: days }], deposit: v.deposit,
         startAt: start, endAt: end, pickup, note, label: `Sewa ${v.model}`,
         inTx: () => {
-          const clash = db.one(`SELECT id FROM orders WHERE vehicle_id = ? AND status IN ${ACTIVE_STATES} AND start_at < ? AND end_at > ?`, v.id, end, start);
+          const clash = db.one(`SELECT id FROM orders WHERE vehicle_id = ? AND status IN ${ACTIVE_STATES} AND start_at < ? AND (end_at IS NULL OR end_at > ?)`,
+            v.id, end ?? Number.MAX_SAFE_INTEGER, start);
           if (clash) fail(409, 'Kenderaan ini sudah ditempah untuk sebahagian tarikh tersebut. Pilih tarikh lain.');
         }
       });
@@ -252,7 +255,7 @@ export function registerModules(ctx) {
     const out = {
       id: l.id, kind: l.kind, category: l.category, title: l.title, price: l.price, negotiable: !!l.negotiable, condition: l.condition,
       campus: l.campus, location: l.location, images: JSON.parse(l.images), meta: JSON.parse(l.meta), stock: l.stock, status: l.status,
-      views: l.views, created_at: l.created_at, updated_at: l.updated_at, owner: { id: owner.id, name: owner.name, avatar: owner.avatar }
+      views: l.views, created_at: l.created_at, updated_at: l.updated_at, owner: { id: owner.id, name: owner.name, avatar: owner.avatar, ...sellerRating(owner.id) }
     };
     if (full) {
       out.description = l.description;
@@ -261,6 +264,7 @@ export function registerModules(ctx) {
       out.owner = {
         ...out.owner, campus: owner.campus, created_at: owner.created_at, online: isOnline(owner.id),
         listings: db.one("SELECT COUNT(*) AS n FROM listings WHERE user_id = ? AND status = 'ACTIVE'", owner.id).n,
+        ...sellerRating(owner.id),
         sold: db.one("SELECT COUNT(*) AS n FROM orders WHERE seller_id = ? AND listing_id IS NOT NULL AND status = 'COMPLETED'", owner.id).n
       };
     }
@@ -448,11 +452,16 @@ export function registerModules(ctx) {
     return { ok: true };
   });
 
+  route('GET', '/api/users/:id/listings', ({ params }) => ({
+    listings: listingRows("l.user_id = ? AND l.status IN ('ACTIVE','RESERVED')", [Number(params.id)], 'l.created_at DESC', 60)
+  }));
+
   route('GET', '/api/my/listings', ({ user }) => {
     need(user);
     return {
       listings: db.all("SELECT * FROM listings WHERE user_id = ? AND status != 'DELETED' ORDER BY updated_at DESC", user.id).map((l) => listingOut(l, true)),
-      sales: db.all('SELECT * FROM orders WHERE seller_id = ? AND listing_id IS NOT NULL ORDER BY created_at DESC LIMIT 50', user.id).map(orderOut)
+      sales: db.all('SELECT * FROM orders WHERE seller_id = ? AND listing_id IS NOT NULL ORDER BY created_at DESC LIMIT 50', user.id).map(orderOut),
+      rating: sellerRating(user.id)
     };
   });
 

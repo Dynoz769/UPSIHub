@@ -108,6 +108,15 @@ CREATE TABLE IF NOT EXISTS reviews (
   comment TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS seller_reviews (
+  id INTEGER PRIMARY KEY,
+  order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id),
+  seller_id INTEGER NOT NULL REFERENCES users(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  rating INTEGER NOT NULL,
+  comment TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS transactions (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -239,6 +248,7 @@ CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, id);
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reviews_shop ON reviews(shop_id);
+CREATE INDEX IF NOT EXISTS idx_seller_reviews ON seller_reviews(seller_id);
 `;
 
 const POST_MIGRATION_INDEXES = `

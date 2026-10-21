@@ -104,9 +104,10 @@ Object.assign(actions, {
           ${v.notes ? `<div class="alert info small">${icon('info')}<div>${esc(v.notes)}</div></div>` : ''}
           <div class="grid-2">
             <div class="field"><label>Tarikh ambil *</label><input class="input" type="date" name="start_date" required min="${ymd(new Date())}" value="${start}" data-change="rentalCalc"></div>
-            <div class="field"><label>Tarikh pulang *</label><input class="input" type="date" name="end_date" required min="${addDays(start, 1)}" value="${addDays(start, 1)}" data-change="rentalCalc"></div>
+            <div class="field" id="endField"><label>Tarikh pulang</label><input class="input" type="date" name="end_date" min="${addDays(start, 1)}" value="${addDays(start, 1)}" data-change="rentalCalc"></div>
           </div>
-          ${booked.length ? `<div class="small"><div class="label" style="margin-bottom:4px">Tarikh sudah ditempah</div><div class="row-wrap">${booked.map((b) => `<span class="badge red">${fmtDay(b.start_at)} – ${fmtDay(b.end_at)}</span>`).join('')}</div></div>` : '<div class="xs faint">Tiada tempahan lain buat masa ini.</div>'}
+          <label class="check"><input type="checkbox" name="open_end" data-change="rentalCalc"> Belum pasti tarikh pulang</label>
+          ${booked.length ? `<div class="small"><div class="label" style="margin-bottom:4px">Tarikh sudah ditempah</div><div class="row-wrap">${booked.map((b) => `<span class="badge red">${fmtDay(b.start_at)} – ${b.end_at ? fmtDay(b.end_at) : 'belum dipulangkan'}</span>`).join('')}</div></div>` : '<div class="xs faint">Tiada tempahan lain buat masa ini.</div>'}
           <div class="field"><label>Lokasi & masa ambil kereta</label><input class="input" name="pickup" maxlength="150" placeholder="Cth: Depan Kolej Harun Aminurrashid, 9 pagi"></div>
           <div class="field"><label>Nota</label><input class="input" name="note" maxlength="300" placeholder="Cth: Perlu car seat bayi"></div>
           <div class="line-items" id="rentalCalc"></div>
@@ -138,6 +139,22 @@ changes.loadSlots = async (el) => {
 changes.rentalCalc = (el) => {
   const form = el.closest('form');
   const start = form.start_date.value;
+  const open = form.open_end?.checked;
+  document.getElementById('endField').classList.toggle('hidden', !!open);
+  form.end_date.required = !open;
+  if (open) {
+    const rate = Number(form.dataset.rate);
+    const deposit = Number(form.dataset.deposit);
+    const s0 = new Date(`${start}T00:00`).getTime();
+    const blocked = JSON.parse(form.dataset.booked).some((b) => b.end_at == null || b.end_at > s0);
+    document.getElementById('rentalCalc').innerHTML = `
+      <div><span class="muted">Sewa hari pertama</span><span>${rm(rate)}</span></div>
+      <div><span class="muted">Deposit</span><span>${rm(deposit)}</span></div>
+      <div class="total-row"><span>Jumlah dibayar sekarang</span><span class="price">${rm(rate + deposit)}</span></div>
+      <div class="alert info small">${icon('info')}<div>Sewa dikira ${rm(rate)} sehari sehingga kereta dipulangkan. Bila dipulangkan, baki sewa ditolak dari dompet anda (atau deposit jika baki tidak cukup), dan baki deposit dipulangkan.</div></div>
+      ${blocked ? `<div class="alert danger small">${icon('alert')}<div>Kereta ini ada tempahan lain selepas tarikh ini. Sila pilih tarikh pulang.</div></div>` : ''}`;
+    return;
+  }
   if (start && (!form.end_date.value || form.end_date.value <= start)) form.end_date.value = addDays(start, 1);
   form.end_date.min = start ? addDays(start, 1) : '';
   const days = Math.round((new Date(`${form.end_date.value}T00:00`) - new Date(`${start}T00:00`)) / 864e5);
@@ -165,6 +182,6 @@ Object.assign(forms, {
     return submitBooking({ type: 'SERVICE', shopId: Number(form.dataset.shop), itemId: Number(form.dataset.item), start_at: Number(d.start_at), address: d.address, note: d.note, payment: d.payment });
   },
   bookRental: (d, form) => submitBooking({
-    type: 'RENTAL', vehicleId: Number(form.dataset.vehicle), start_date: d.start_date, end_date: d.end_date, pickup: d.pickup, note: d.note, payment: 'WALLET'
+    type: 'RENTAL', vehicleId: Number(form.dataset.vehicle), start_date: d.start_date, end_date: d.open_end === 'on' ? null : d.end_date, pickup: d.pickup, note: d.note, payment: 'WALLET'
   })
 });

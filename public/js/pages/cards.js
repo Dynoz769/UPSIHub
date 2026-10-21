@@ -50,7 +50,7 @@ export function listingCard(l) {
         ${listingPrice(l)}
         <h3 class="clamp-2" style="font-size:15px">${esc(l.title)}</h3>
         <div class="xs muted clamp-1">${listingSubtitle(l)}</div>
-        <div class="shop-meta xs"><span>${icon('pin')} ${esc(l.location || l.campus)}</span><span>${timeAgo(l.created_at)}</span></div>
+        <div class="shop-meta xs"><span>${icon('pin')} ${esc(l.location || l.campus)}</span><span>${l.owner?.reviews ? `${icon('star', 'star')} ${l.owner.rating.toFixed(1)} · ` : ''}${timeAgo(l.created_at)}</span></div>
       </div>
     </article>`;
 }

@@ -1,7 +1,7 @@
 // Student listings: second-hand goods, rooms, part-time jobs, events and lost & found.
 import {
   state, api, esc, rm, toSen, senToInput, icon, page, actions, forms, changes, inputs, refresh, openModal, closeOverlay, toast,
-  confirmDialog, emptyState, avatar, statusBadge, fmtDate, fmtDateTime, timeAgo, uploadImage, catEmoji, hooks, ymd
+  confirmDialog, emptyState, avatar, statusBadge, fmtDate, fmtDateTime, timeAgo, uploadImage, catEmoji, hooks, ymd, stars
 } from '../core.js';
 import { listingCard, listingPrice, listingSubtitle } from './cards.js';
 import { orderCard } from './orders.js';
@@ -151,12 +151,14 @@ page('/listing/:id', async ({ id }) => {
             <hr class="sep">
             <p class="small" style="white-space:pre-wrap">${esc(l.description)}</p>
           </div>
-          <div class="card pad row">
+          <a class="card pad row" href="#/u/${l.owner.id}">
             ${avatar(l.owner, 'lg')}
             <div class="grow"><b>${esc(l.owner.name)}</b>
+              <div class="small">${l.owner.reviews ? `${stars(l.owner.rating)} <b>${l.owner.rating.toFixed(1)}</b> <span class="muted">(${l.owner.reviews} ulasan)</span>` : '<span class="faint">Belum ada ulasan</span>'}</div>
               <div class="xs muted">Ahli sejak ${fmtDate(l.owner.created_at)} · ${l.owner.listings} iklan aktif · ${l.owner.sold} jualan selesai</div>
               ${l.owner.online ? '<div class="xs" style="color:var(--accent-600)">● Dalam talian</div>' : ''}</div>
-          </div>
+            ${icon('right')}
+          </a>
           ${!mine && state.me ? `<button class="btn btn-link small" style="align-self:flex-start;color:var(--text-3)" data-act="reportListing" data-id="${l.id}">${icon('flag')} Laporkan iklan ini</button>` : ''}
         </section>
       </div>
@@ -376,7 +378,7 @@ forms.saveListing = async (d, form) => {
 // =====================================================================
 page('/my', async (_, query) => {
   const tab = query.get('tab') === 'sales' ? 'sales' : 'listings';
-  const { listings, sales } = await api('GET', '/api/my/listings');
+  const { listings, sales, rating } = await api('GET', '/api/my/listings');
   const pending = sales.filter((o) => o.status === 'PENDING').length;
   const body = tab === 'listings'
     ? (listings.length ? `<div class="stack-sm">${listings.map((l) => `
@@ -394,7 +396,7 @@ page('/my', async (_, query) => {
       : `<div class="card">${emptyState('receipt', 'Tiada jualan lagi', 'Pembelian & tempahan daripada iklan anda akan muncul di sini.')}</div>`);
   return `
     <div class="narrow stack">
-      <div class="page-head"><div><h1>Iklan Saya</h1><p>Urus iklan anda dan pembelian yang masuk.</p></div><a class="btn btn-primary" href="#/post">${icon('plus')} Pasang iklan</a></div>
+      <div class="page-head"><div><h1>Iklan Saya</h1><p>Urus iklan anda dan pembelian yang masuk. ${rating.reviews ? `Rating penjual anda: ${stars(rating.rating)} <b>${rating.rating.toFixed(1)}</b> (${rating.reviews} ulasan) · <a class="btn-link" href="#/u/${state.me.id}">Lihat profil</a>` : 'Belum ada ulasan penjual.'}</p></div><a class="btn btn-primary" href="#/post">${icon('plus')} Pasang iklan</a></div>
       <nav class="tabs">
         <a href="#/my" class="${tab === 'listings' ? 'active' : ''}">${icon('tag')} Iklan <span class="badge">${listings.length}</span></a>
         <a href="#/my?tab=sales" class="${tab === 'sales' ? 'active' : ''}">${icon('receipt')} Jualan & tempahan masuk${pending ? ` <span class="badge red">${pending}</span>` : ''}</a>
@@ -402,3 +404,41 @@ page('/my', async (_, query) => {
       ${body}
     </div>`;
 }, { auth: true });
+
+// =====================================================================
+// SELLER PROFILE
+// =====================================================================
+page('/u/:id', async ({ id }) => {
+  const [{ user: u, reviews }, { listings }] = await Promise.all([api('GET', `/api/users/${id}`), api('GET', `/api/users/${id}/listings`)]);
+  const dist = [5, 4, 3, 2, 1].map((n) => [n, reviews.filter((r) => r.rating === n).length]);
+  return `
+    <div class="stack-lg">
+      <section class="card pad row" style="flex-wrap:wrap">
+        ${avatar(u, 'lg')}
+        <div class="grow">
+          <h1 style="font-size:22px;font-weight:850">${esc(u.name)}</h1>
+          <div class="small">${u.reviews ? `${stars(u.rating)} <b>${u.rating.toFixed(1)}</b> <span class="muted">daripada ${u.reviews} ulasan</span>` : '<span class="faint">Belum ada ulasan</span>'}</div>
+          <div class="xs muted">${esc(state.config.campuses[u.campus] || u.campus)} · Ahli sejak ${fmtDate(u.created_at)} · ${u.sold} jualan selesai${u.online ? ' · <span style="color:var(--accent-600)">● Dalam talian</span>' : ''}</div>
+        </div>
+      </section>
+      <div class="grid-2" style="align-items:start">
+        <section class="card">
+          <div class="card-head"><h2 class="section-title">Ulasan pembeli</h2><span class="small muted">${u.reviews}</span></div>
+          <div class="card-body" style="padding-top:4px;padding-bottom:4px">
+            ${u.reviews ? `<div class="stack-sm" style="padding:12px 0">${dist.map(([n, c]) => `<div class="row xs"><span style="width:28px">${n}★</span><div class="rating-bar"><i style="width:${(c / u.reviews) * 100}%"></i></div><span class="faint" style="width:20px">${c}</span></div>`).join('')}</div>` : ''}
+            ${reviews.length ? reviews.map((r) => `
+              <div class="review">
+                <div class="between"><div class="row">${avatar({ name: r.name }, 'sm')}<b class="small">${esc(r.name)}</b></div><span class="xs faint">${timeAgo(r.created_at)}</span></div>
+                <div style="margin:6px 0 2px">${stars(r.rating)}</div>
+                ${r.title ? `<div class="xs faint">Membeli: ${esc(r.title)}</div>` : ''}
+                ${r.comment ? `<p class="small muted">${esc(r.comment)}</p>` : ''}
+              </div>`).join('') : '<p class="small faint" style="padding:16px 0">Ulasan muncul selepas pembeli menyelesaikan pembelian.</p>'}
+          </div>
+        </section>
+        <section class="stack-sm">
+          <h2 class="section-title">Iklan aktif (${listings.length})</h2>
+          ${listings.length ? `<div class="grid-2">${listings.map(listingCard).join('')}</div>` : `<div class="card">${emptyState('tag', 'Tiada iklan aktif', 'Penjual ini tiada iklan buat masa ini.')}</div>`}
+        </section>
+      </div>
+    </div>`;
+});

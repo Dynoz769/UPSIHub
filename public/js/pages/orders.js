@@ -3,6 +3,7 @@ import { state, api, esc, rm, icon, page, actions, forms, onPage, refresh, statu
 const kindOf = (o) => ORDER_KINDS[o.kind] || ORDER_KINDS.ORDER;
 // Short schedule text for bookings, e.g. "Sab 25 Okt, 09:00" or "25 Okt – 27 Okt (2 hari)".
 function schedule(o) {
+  if (o.kind === 'RENTAL' && !o.end_at) return `${fmtDay(o.start_at)} – tarikh pulang belum ditetapkan`;
   if (o.kind === 'RENTAL') return `${fmtDay(o.start_at)} – ${fmtDay(o.end_at)} (${Math.round((o.end_at - o.start_at) / 864e5)} hari)`;
   if (o.start_at) return `${fmtDay(o.start_at)}, ${fmtTime(o.start_at)}`;
   return '';
@@ -48,13 +49,14 @@ export function orderButtons(o, role) {
     const k = kindOf(o);
     const readyLabel = o.kind === 'ORDER' ? (o.fulfilment === 'DELIVERY' ? 'Sedang dihantar' : 'Sedia diambil') : k.ready;
     if (o.status === 'ACCEPTED') out.push(b('READY', readyLabel, 'btn-primary', k.ic), b('CANCELLED', 'Batal', 'btn-danger', 'x'));
-    if (o.status === 'READY') out.push(b('COMPLETED', k.done, 'btn-success'));
+    if (o.status === 'READY' && o.kind === 'RENTAL' && !o.end_at) out.push(`<button class="btn btn-success" data-act="returnRental" data-id="${o.id}" data-start="${o.start_at}">${icon('check')} ${k.done}</button>`);
+    else if (o.status === 'READY') out.push(b('COMPLETED', k.done, 'btn-success'));
   }
   if (role === 'buyer') {
     if (o.status === 'PENDING') out.push(b('CANCELLED', 'Batalkan pesanan', 'btn-danger', 'x'));
     if (o.status === 'READY') out.push(b('COMPLETED', 'Sahkan telah terima', 'btn-success'));
     if (o.status === 'COMPLETED' && o.payout === 'HELD' && !o.dispute) out.push(`<button class="btn btn-success" data-act="confirmOrder" data-id="${o.id}">${icon('check')} Sahkan telah terima</button>`);
-    if (o.status === 'COMPLETED' && !o.review && o.shop.id) out.push(`<button class="btn btn-primary" data-act="reviewOrder" data-id="${o.id}">${icon('star')} Beri ulasan</button>`);
+    if (o.status === 'COMPLETED' && !o.review) out.push(`<button class="btn btn-primary" data-act="reviewOrder" data-id="${o.id}">${icon('star')} Beri ulasan</button>`);
     if (canDispute(o)) out.push(`<button class="btn btn-danger" data-act="disputeModal" data-id="${o.id}">${icon('alert')} Laporkan masalah</button>`);
   }
   if (role === 'seller' && o.dispute?.status === 'OPEN') {
@@ -136,14 +138,15 @@ page('/orders/:id', async ({ id }) => {
           ${o.kind === 'ORDER' ? `<div><span class="muted">Caj penghantaran</span><span>${o.delivery_fee ? rm(o.delivery_fee) : 'Percuma'}</span></div>` : ''}
           ${o.deposit ? `<div><span class="muted">Deposit (dipulangkan selepas selesai)</span><span>${rm(o.deposit)}</span></div>` : ''}
           ${role !== 'buyer' && o.commission ? `<div><span class="muted">Komisen platform</span><span>−${rm(o.commission)}</span></div>` : ''}
-          <div class="total-row"><span>Jumlah</span><span class="price">${rm(o.total)}</span></div>
+          <div class="total-row"><span>Jumlah${o.kind === 'RENTAL' && !o.end_at ? ' dibayar setakat ini' : ''}</span><span class="price">${rm(o.total)}</span></div>
         </div>
+        ${o.kind === 'RENTAL' && !o.end_at && !['CANCELLED', 'REJECTED'].includes(o.status) ? `<div class="alert info small">${icon('key')}<div>Sewa tanpa tarikh pulang: ${rm(o.items[0].price)} sehari dikira sehingga kereta dipulangkan. Hari pertama sudah dibayar. Baki sewa ditolak dari dompet ${role === 'buyer' ? 'anda' : 'penyewa'} (atau deposit jika tidak cukup) apabila ${role === 'seller' ? 'anda menandakan' : 'pemilik menandakan'} kereta dipulangkan.</div></div>` : ''}
         <dl class="kv">
           <dt>Pembayaran</dt><dd>${o.payment === 'WALLET' ? `${icon('wallet')} Dompet UPSIHub` : `${icon('banknote')} Tunai semasa terima`}</dd>
           <dt>Jenis</dt><dd>${icon(kindOf(o).ic)} ${esc(kindOf(o).label)}</dd>
           ${o.kind === 'ORDER' ? `<dt>Penerimaan</dt><dd>${o.fulfilment === 'DELIVERY' ? 'Penghantaran' : 'Ambil sendiri'}</dd>` : ''}
           ${o.listing ? `<dt>Iklan</dt><dd><a class="btn-link" href="#/listing/${o.listing.id}">${esc(o.listing.title)}</a></dd>` : ''}
-          ${o.kind === 'RENTAL' ? `<dt>Kenderaan</dt><dd>${esc(o.vehicle.model)} · ${esc(o.vehicle.plate)}</dd><dt>Ambil</dt><dd>${fmtDate(o.start_at)}</dd><dt>Pulang</dt><dd>${fmtDate(o.end_at)}</dd>` : ''}
+          ${o.kind === 'RENTAL' ? `<dt>Kenderaan</dt><dd>${esc(o.vehicle.model)} · ${esc(o.vehicle.plate)}</dd><dt>Ambil</dt><dd>${fmtDate(o.start_at)}</dd><dt>Pulang</dt><dd>${o.end_at ? fmtDate(o.end_at) : 'Belum ditetapkan'}</dd>` : ''}
           ${o.kind === 'RIDE' || o.kind === 'SERVICE' ? `<dt>Tarikh & masa</dt><dd>${fmtDateTime(o.start_at)}${o.end_at ? ` – ${fmtTime(o.end_at)}` : ''}</dd>` : ''}
           ${o.pax ? `<dt>Penumpang</dt><dd>${o.pax} orang</dd>` : ''}
           ${o.pickup ? `<dt>${o.kind === 'RENTAL' ? 'Serahan kereta' : 'Lokasi ambil'}</dt><dd>${esc(o.pickup)}</dd>` : ''}
@@ -203,6 +206,20 @@ Object.assign(actions, {
       foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="reviewForm">Hantar ulasan</button>`
     });
   },
+  returnRental(el) {
+    const today = new Date();
+    const max = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const s0 = new Date(Number(el.dataset.start));
+    const min = `${s0.getFullYear()}-${String(s0.getMonth() + 1).padStart(2, '0')}-${String(s0.getDate()).padStart(2, '0')}`;
+    openModal({
+      title: 'Kereta dipulangkan',
+      body: `<form id="returnForm" data-form="returnRental" data-id="${el.dataset.id}" class="stack">
+        <p class="small muted">Masukkan tarikh kereta dipulangkan. Sistem akan mengira jumlah hari, menolak baki sewa daripada dompet penyewa (atau deposit), dan memulangkan baki deposit.</p>
+        <div class="field"><label>Tarikh pulang *</label><input class="input" type="date" name="return_date" required min="${min}" max="${max}" value="${max}"></div>
+      </form>`,
+      foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-success" type="submit" form="returnForm">Sahkan</button>`
+    });
+  },
   pickStar(el) {
     const n = Number(el.dataset.n);
     document.querySelectorAll('#starInput button').forEach((b) => b.classList.toggle('on', Number(b.dataset.n) <= n));
@@ -210,6 +227,13 @@ Object.assign(actions, {
   }
 });
 
+forms.returnRental = async (data, form) => {
+  await api('POST', `/api/orders/${form.dataset.id}/status`, { status: 'COMPLETED', return_date: data.return_date });
+  closeOverlay();
+  toast('Sewa diselesaikan dan dikira mengikut tarikh pulang.', 'success');
+  hooks.loadMe().then(hooks.renderShell);
+  refresh();
+};
 forms.review = async (data, form) => {
   await api('POST', `/api/orders/${form.dataset.id}/review`, { rating: Number(data.rating), comment: data.comment });
   closeOverlay();

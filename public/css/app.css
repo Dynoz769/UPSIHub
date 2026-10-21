@@ -524,3 +524,5 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .my-listing { display: flex; align-items: center; gap: 14px; padding: 12px 14px; transition: box-shadow .15s; }
 .my-listing:hover { box-shadow: var(--shadow); }
 .slot.on, .slot.on:hover { color: #fff !important; }
+.rating-bar { flex: 1; height: 8px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.rating-bar i { display: block; height: 100%; background: #f59e0b; border-radius: 99px; }

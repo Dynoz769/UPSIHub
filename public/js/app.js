@@ -19,7 +19,7 @@ const view = document.getElementById('view');
 // =====================================================================
 function navItems() {
   const items = [
-    { href: '#/', ic: 'home', label: 'Utama', match: /^\/(shops?(\/.*)?|search|market|rooms|jobs|events|lost|transport|services|listing\/.*|post|my)?$/ },
+    { href: '#/', ic: 'home', label: 'Utama', match: /^\/(shops?(\/.*)?|search|market|rooms|jobs|events|lost|transport|services|listing\/.*|post|my|u\/.*)?$/ },
     { href: '#/orders', ic: 'receipt', label: 'Pesanan', match: /^\/orders/ },
     { href: '#/chat', ic: 'chat', label: 'Chat', match: /^\/chat/, badge: state.unread.chat },
     { href: '#/wallet', ic: 'wallet', label: 'Dompet', match: /^\/wallet/ },

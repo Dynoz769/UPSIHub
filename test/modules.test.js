@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 const PORT = 4000 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -172,6 +173,18 @@ test('second-hand item: reserved on purchase, back on sale if cancelled, sold on
   assert.equal(await balance(seller), sellerStart + item.price);
   // Second-hand orders can still be disputed like any other order.
   assert.ok((await buyer('GET', `/api/orders/${r2.body.order.id}`)).body.order.listing);
+
+  // Buyer rates the individual seller; it shows on the seller's profile and listings.
+  assert.equal((await seller('POST', `/api/orders/${r2.body.order.id}/review`, { rating: 5 })).status, 403);
+  const rev = await buyer('POST', `/api/orders/${r2.body.order.id}/review`, { rating: 4, comment: 'Barang macam baru, penjual mesra' });
+  assert.equal(rev.status, 200, rev.body.error);
+  assert.equal((await buyer('POST', `/api/orders/${r2.body.order.id}/review`, { rating: 5 })).status, 409);
+  const profile = (await client()('GET', `/api/users/${item.owner.id}`)).body;
+  assert.equal(profile.user.rating, 4);
+  assert.equal(profile.user.reviews, 1);
+  assert.equal(profile.reviews[0].title, item.title);
+  const again = (await client()('GET', `/api/listings/${item.id}`)).body.listing;
+  assert.equal(again.owner.reviews, 1);
 });
 
 test('post, edit, report and remove a listing', async () => {
@@ -245,4 +258,65 @@ test('admin manages categories; renaming carries shops along', async () => {
   assert.ok(!cfg.categories.includes('Bunga & Hadiah'));
   const stu = await as('pelajar@demo.upsi');
   assert.equal((await stu('GET', '/api/admin/categories')).status, 403);
+});
+
+function shiftStart(id, days) {
+  // Pretend the car was collected `days` days ago.
+  const db = new DatabaseSync(path.join(dataDir, 'upsihub.db'));
+  db.prepare('UPDATE orders SET start_at = start_at - ? WHERE id = ?').run(days * 864e5, id);
+  db.close();
+}
+
+test('rental without a return date: car blocked until returned, actual days charged', async () => {
+  await topUp('pelajar@demo.upsi', 100000);
+  const drv = await as('prebet@demo.upsi');
+  const stu = await as('pelajar@demo.upsi');
+  const v = (await stu('GET', '/api/vehicles')).body.vehicles.find((x) => x.model.includes('Alza'));
+  const stuStart = await balance(stu);
+  const drvStart = await balance(drv);
+  const r = await stu('POST', '/api/bookings', { type: 'RENTAL', vehicleId: v.id, start_date: ymd(0) });
+  assert.equal(r.status, 200, r.body.error);
+  const o = r.body.order;
+  assert.equal(o.end_at, null);
+  assert.equal(o.total, v.daily_rate + v.deposit, 'pays 1 day + deposit up front');
+  assert.equal((await stu('POST', '/api/bookings', { type: 'RENTAL', vehicleId: v.id, start_date: ymd(20), end_date: ymd(21) })).status, 409, 'blocked until returned');
+  assert.equal((await stu('GET', `/api/vehicles/${v.id}`)).body.booked[0].end_at, null);
+
+  await drv('POST', `/api/orders/${o.id}/status`, { status: 'ACCEPTED' });
+  await drv('POST', `/api/orders/${o.id}/status`, { status: 'READY' });
+  shiftStart(o.id, 3);
+  assert.equal((await drv('POST', `/api/orders/${o.id}/status`, { status: 'COMPLETED', return_date: ymd(5) })).status, 400, 'return date cannot be in the future');
+  const done = await drv('POST', `/api/orders/${o.id}/status`, { status: 'COMPLETED', return_date: ymd(0) });
+  assert.equal(done.status, 200, done.body.error);
+  assert.equal(done.body.order.items[0].qty, 3);
+  assert.equal(done.body.order.subtotal, v.daily_rate * 3);
+  assert.equal(await balance(stu), stuStart - v.daily_rate * 3 - v.deposit, 'extra 2 days taken from wallet');
+  await stu('POST', `/api/orders/${o.id}/confirm`);
+  assert.equal(await balance(stu), stuStart - v.daily_rate * 3, 'deposit returned in full');
+  assert.equal(await balance(drv), drvStart + v.daily_rate * 3);
+  const later = await stu('POST', '/api/bookings', { type: 'RENTAL', vehicleId: v.id, start_date: ymd(20), end_date: ymd(21) });
+  assert.equal(later.status, 200, 'car free again once returned');
+  await stu('POST', `/api/orders/${later.body.order.id}/status`, { status: 'CANCELLED' });
+});
+
+test('open rental with an empty wallet: shortfall comes out of the deposit', async () => {
+  const drv = await as('prebet@demo.upsi');
+  const u = client();
+  await u('POST', '/api/auth/register', { name: 'Penyewa Tiga', email: 'tiga@test.my', password: 'password1' });
+  const v = (await u('GET', '/api/vehicles')).body.vehicles.find((x) => x.model.includes('Alza'));
+  await topUp('tiga@test.my', v.daily_rate + v.deposit);
+  const r = await u('POST', '/api/bookings', { type: 'RENTAL', vehicleId: v.id, start_date: ymd(0) });
+  assert.equal(r.status, 200, r.body.error);
+  assert.equal(await balance(u), 0);
+  const drvStart = await balance(drv);
+  await drv('POST', `/api/orders/${r.body.order.id}/status`, { status: 'ACCEPTED' });
+  await drv('POST', `/api/orders/${r.body.order.id}/status`, { status: 'READY' });
+  shiftStart(r.body.order.id, 3);
+  const done = await drv('POST', `/api/orders/${r.body.order.id}/status`, { status: 'COMPLETED', return_date: ymd(0) });
+  assert.equal(done.status, 200, done.body.error);
+  assert.equal(done.body.order.deposit, 0, 'whole deposit used towards rent');
+  assert.match(done.body.order.note, /Baki sewa belum dibayar/);
+  await u('POST', `/api/orders/${r.body.order.id}/confirm`);
+  assert.equal(await balance(drv), drvStart + v.daily_rate + v.deposit);
+  assert.equal(await balance(u), 0);
 });
