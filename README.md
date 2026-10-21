@@ -4,6 +4,30 @@ Platform dalam talian untuk pelajar UPSI: pasar kampus, pesanan, dompet digital 
 Ia tidak bergantung pada perkhidmatan pihak ketiga. Tiada WhatsApp, tiada gerbang pembayaran (payment gateway) dan tiada CDN.
 Semuanya berjalan pada pelayan anda sendiri.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Dynoz769/UPSIHub)
+
+## Lancar dalam talian (Render)
+
+1. Pastikan kod sudah ada dalam branch `main`. Butang Deploy membaca `render.yaml` dari branch utama.
+2. Tekan butang **Deploy to Render** di atas, kemudian log masuk Render menggunakan akaun GitHub.
+3. Isi dua medan yang diminta:
+   - `ADMIN_EMAIL`: e-mel akaun admin anda
+   - `ADMIN_PASSWORD`: kata laluan admin (sekurang-kurangnya 8 aksara)
+4. Tekan **Apply / Create**. Dalam ±5 minit, laman akan hidup di `https://upsihub-xxxx.onrender.com`.
+5. Log masuk sebagai admin, kemudian di *Panel Admin › Tetapan* isi akaun bank / kod QR untuk tambah nilai dompet.
+
+Apa yang disediakan oleh `render.yaml`:
+
+| Tetapan | Nilai | Sebab |
+|---|---|---|
+| Pelan | Starter (~USD7/bulan) | Pelan percuma "tidur" selepas 15 minit dan **memadam semua data** apabila bangun semula |
+| Cakera | 1GB di `/var/data` (~USD0.25/bulan) | Menyimpan database, gambar dan sandaran secara kekal |
+| Wilayah | Singapura | Paling dekat dengan pengguna di Malaysia |
+| `DEMO` | `0` | Laman bermula kosong, tanpa kedai/akaun demo. Tukar ke `1` di *Environment* jika mahu data contoh |
+| Auto-deploy | Ya | Setiap kali `main` dikemas kini di GitHub, laman dikemas kini sendiri |
+
+Domain sendiri (contoh `upsihub.my`) boleh ditambah di *Settings › Custom Domains* dalam Render.
+
 ## Ciri-ciri
 
 | Bahagian | Fungsi |
