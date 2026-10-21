@@ -1,0 +1,13 @@
+{
+  "name": "UPSIHub",
+  "short_name": "UPSIHub",
+  "description": "Pasar kampus, dompet digital & chat pelajar UPSI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f6fb",
+  "theme_color": "#312e81",
+  "lang": "ms",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

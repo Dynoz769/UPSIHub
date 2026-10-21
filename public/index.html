@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>UPSIHub – Pasar Kampus, Dompet & Chat Pelajar UPSI</title>
+  <meta name="description" content="Platform dalam talian pelajar UPSI: pesan makanan, prebet & servis runner, bayar dengan Dompet UPSIHub dan chat terus dengan peniaga.">
+  <meta name="theme-color" content="#312e81">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/css/app.css">
+  <script src="/js/theme.js"></script>
+</head>
+<body>
+  <div class="announce" id="announce"><span class="pill">RASMI</span><span id="announceText">Hab Digital Pelajar UPSI</span></div>
+  <header class="topbar">
+    <div class="topbar-in">
+      <a class="brand" href="#/">
+        <span class="brand-mark">U</span>
+        <span>UPSI<b>Hub</b><small>Pasar · Dompet · Chat</small></span>
+      </a>
+      <nav class="nav-desktop" id="navDesktop" aria-label="Navigasi utama"></nav>
+      <div class="top-actions" id="topActions"></div>
+    </div>
+  </header>
+
+  <main id="view" tabindex="-1"></main>
+
+  <footer class="site">
+    <div>
+      <div><strong>UPSIHub</strong><p style="margin-top:4px">Hab digital komuniti mahasiswa Universiti Pendidikan Sultan Idris – pesanan, bayaran & chat dalam satu sistem.</p></div>
+      <div>&copy; 2026 UPSIHub Tech. Hak Cipta Terpelihara.</div>
+    </div>
+  </footer>
+
+  <nav class="bottom-nav" id="navMobile" aria-label="Navigasi bawah"></nav>
+  <div id="overlay-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
