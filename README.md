@@ -15,8 +15,28 @@ Semuanya berjalan pada pelayan anda sendiri.
 | **Chat** | Chat masa nyata antara pelajar dan peniaga (atau sokongan admin), dengan gambar, tanda "dibaca" dan status dalam talian. |
 | **Notifikasi** | Notifikasi dalam aplikasi untuk pesanan, dompet, kelulusan kedai dan mesej. |
 | **Pusat Peniaga** | Permohonan 3 langkah dengan yuran lesen yang dibayar dari dompet. Ada ringkasan jualan (graf 7 hari), urus pesanan masuk, menu (gambar, harga, tersedia/habis), profil kedai, pembaharuan lesen dan suis buka/tutup. |
+| **Laporan Masalah** | Pembeli boleh melaporkan masalah semasa wang masih dipegang. Wang dibekukan sehingga admin memutuskan sama ada pulangan penuh, lepaskan kepada peniaga, atau bahagikan. Lihat bahagian di bawah. |
 | **Panel Admin** | Lulus, tolak atau gantung kedai (yuran dipulangkan jika ditolak). Sahkan tambah nilai berserta resit, proses pengeluaran, urus pengguna (gantung, kredit tunai kaunter), serta tetapan pakej, komisen, akaun bank, kod QR dan pengumuman. |
 | **UI** | Reka bentuk baharu dengan mod gelap, mudah digunakan di telefon (navigasi bawah, drawer), boleh dipasang sebagai aplikasi (PWA) dan sesuai untuk pembaca skrin. |
+
+## Perlindungan pembeli: laporan masalah (pertikaian)
+
+Bayaran dompet tidak terus diberikan kepada peniaga:
+
+1. **Pembeli buat pesanan.** Wang ditolak dari dompet pembeli dan **dipegang** oleh UPSIHub.
+2. **Pesanan selesai:**
+   - Jika **pembeli** tekan *Sahkan telah terima*, wang dilepaskan kepada peniaga serta-merta.
+   - Jika **peniaga** yang tandakan selesai, wang terus dipegang selama **48 jam**. Jika pembeli tidak membuat laporan dalam tempoh itu, wang dilepaskan secara automatik.
+3. **Laporkan masalah.** Semasa wang masih dipegang (Disediakan, Sedia, atau dalam tempoh 48 jam), pembeli boleh melapor dengan sebab, butiran dan gambar bukti. Wang **dibekukan**, dan tiada pihak boleh menukar status pesanan.
+4. **Peniaga memberi penjelasan** (boleh sertakan gambar bukti).
+5. **Admin membuat keputusan** di *Panel Admin › Pertikaian*:
+   - **Pulangan penuh** kepada pembeli; pesanan dibatalkan.
+   - **Lepaskan** kepada peniaga.
+   - **Bahagikan**, iaitu sebahagian kepada setiap pihak. Komisen hanya dikira atas bahagian peniaga.
+
+   Kedua-dua pihak menerima notifikasi berserta sebab keputusan.
+
+Pesanan **tunai** tidak dilindungi kerana wang tidak melalui sistem. Masalah pesanan tunai diselesaikan melalui chat sokongan.
 
 ## Bagaimana wang masuk tanpa gerbang pembayaran?
 

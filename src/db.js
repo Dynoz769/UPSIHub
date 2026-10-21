@@ -153,6 +153,23 @@ CREATE TABLE IF NOT EXISTS notifications (
   read INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS disputes (
+  id INTEGER PRIMARY KEY,
+  order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  reason TEXT NOT NULL,
+  details TEXT NOT NULL DEFAULT '',
+  evidence TEXT,
+  prev_status TEXT NOT NULL,
+  seller_response TEXT,
+  seller_evidence TEXT,
+  status TEXT NOT NULL DEFAULT 'OPEN',
+  outcome TEXT,
+  refund INTEGER,
+  admin_note TEXT,
+  created_at INTEGER NOT NULL,
+  resolved_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -179,10 +196,27 @@ export const DEFAULT_SETTINGS = {
   announcement: 'Hab Digital Pelajar Kampus Sultan Abdul Jalil (KSAB) & Sultan Azlan Shah (KSAS)'
 };
 
+function migrate(db) {
+  const cols = db.prepare('PRAGMA table_info(orders)').all().map((c) => c.name);
+  if (!cols.includes('payout')) {
+    // payout tracks the held wallet money: NONE (cash), HELD, RELEASED (to seller) or REFUNDED (to buyer).
+    db.exec(`
+      ALTER TABLE orders ADD COLUMN payout TEXT NOT NULL DEFAULT 'NONE';
+      ALTER TABLE orders ADD COLUMN release_at INTEGER;
+      UPDATE orders SET payout = CASE
+        WHEN payment != 'WALLET' THEN 'NONE'
+        WHEN status = 'COMPLETED' THEN 'RELEASED'
+        WHEN status IN ('CANCELLED', 'REJECTED') THEN 'REFUNDED'
+        ELSE 'HELD' END;
+      CREATE INDEX IF NOT EXISTS idx_orders_release ON orders(payout, release_at);`);
+  }
+}
+
 export function openDb(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
+  migrate(db);
 
   const cache = new Map();
   const prep = (sql) => {

@@ -1,11 +1,12 @@
 import {
-  state, api, esc, rm, toSen, senToInput, icon, page, actions, forms, inputs, refresh, openModal, closeOverlay, toast,
+  state, api, esc, rm, toSen, senToInput, icon, page, actions, forms, inputs, changes, refresh, openModal, closeOverlay, toast,
   confirmDialog, emptyState, statusBadge, fmtDateTime, fmtDate, imageField, avatar
 } from '../core.js';
 
 const TABS = [
   ['overview', 'Ringkasan', 'grid'],
   ['shops', 'Peniaga', 'store'],
+  ['disputes', 'Pertikaian', 'alert'],
   ['topups', 'Tambah nilai', 'wallet'],
   ['withdrawals', 'Pengeluaran', 'bank'],
   ['users', 'Pengguna', 'users'],
@@ -17,8 +18,8 @@ page('/admin/:tab', ({ tab }, query) => adminPage(tab, query), { admin: true });
 
 async function adminPage(tab, query) {
   const ov = await api('GET', '/api/admin/overview');
-  const counts = { shops: ov.pending.shops, topups: ov.pending.topups, withdrawals: ov.pending.withdrawals };
-  const render = { overview, shops, topups, withdrawals, users, settings }[tab] || overview;
+  const counts = { shops: ov.pending.shops, topups: ov.pending.topups, withdrawals: ov.pending.withdrawals, disputes: ov.pending.disputes };
+  const render = { overview, shops, disputes, topups, withdrawals, users, settings }[tab] || overview;
   const content = await render(ov, query);
   return `
     <div class="stack">
@@ -39,7 +40,8 @@ function overview(ov) {
         ${stat('store', '', 'Peniaga aktif', ov.shops, `${ov.users} pengguna berdaftar`)}
         ${stat('wallet', 'amber', 'Baki dompet pengguna', rm(ov.float), 'Mesti sepadan dengan baki akaun bank platform')}
       </div>
-      <div class="grid-3">
+      <div class="grid-4">
+        ${todo('alert', ov.pending.disputes, 'pertikaian terbuka', '#/admin/disputes')}
         ${todo('store', ov.pending.shops, 'permohonan kedai', '#/admin/shops')}
         ${todo('wallet', ov.pending.topups, 'tambah nilai menunggu', '#/admin/topups')}
         ${todo('bank', ov.pending.withdrawals, 'pengeluaran menunggu', '#/admin/withdrawals')}
@@ -76,6 +78,46 @@ async function shops() {
           </td>
         </tr>`).join('')}</tbody>
     </table></div></section>`;
+}
+
+async function disputes(_, query) {
+  const status = query?.get('s') || 'OPEN';
+  const { disputes: list, reasons } = await api('GET', `/api/admin/disputes?status=${status}`);
+  const img = (src) => src ? `<img src="${esc(src)}" alt="Bukti" data-act="zoom" data-src="${esc(src)}" style="width:72px;height:72px;object-fit:cover;border-radius:10px;cursor:zoom-in">` : '';
+  const outcomeText = (d) => ({ REFUND: `Pulangan penuh kepada pembeli`, RELEASE: 'Dilepaskan kepada peniaga', SPLIT: `${rm(d.refund)} kepada pembeli, baki kepada peniaga` }[d.outcome] || '');
+  return `
+    <div class="stack">
+      ${filterChips('disputes', status, ['OPEN', 'RESOLVED', 'ALL'])}
+      <div class="alert info small">${icon('info')}<div>Wang pesanan yang dipertikaikan dibekukan sehingga anda membuat keputusan. Baca kedua-dua penjelasan, semak chat jika perlu, kemudian pilih: pulangan penuh, lepaskan kepada peniaga, atau bahagikan.</div></div>
+      ${list.length ? list.map((d) => {
+        const o = d.order;
+        return `
+          <section class="card pad stack">
+            <div class="between" style="flex-wrap:wrap">
+              <div><a class="bold" href="#/orders/${o.id}">#${esc(o.code)} · ${esc(o.shop.name)}</a><div class="xs faint">Pembeli: ${esc(o.buyer.name)} · Dilaporkan ${fmtDateTime(d.created_at)} · status sebelum: ${esc(d.prev_status)}</div></div>
+              <div class="row">${statusBadge(d.status)}<span class="price">${rm(o.total)}</span></div>
+            </div>
+            <div class="small muted">${o.items.map((i) => `${i.qty}× ${esc(i.title)}`).join(', ')} · ${o.fulfilment === 'DELIVERY' ? `Hantar ke ${esc(o.address)}` : 'Ambil sendiri'}</div>
+            <div class="grid-2">
+              <div class="stack-sm" style="background:var(--danger-50);padding:14px;border-radius:12px">
+                <div class="eyebrow" style="color:var(--danger)">Aduan pembeli</div>
+                <b class="small">${esc(reasons[d.reason] || d.reason)}</b>
+                <p class="small" style="white-space:pre-wrap">${esc(d.details)}</p>${img(d.evidence)}
+              </div>
+              <div class="stack-sm" style="background:var(--surface-2);padding:14px;border-radius:12px">
+                <div class="eyebrow">Penjelasan peniaga</div>
+                ${d.seller_response ? `<p class="small" style="white-space:pre-wrap">${esc(d.seller_response)}</p>${img(d.seller_evidence)}` : '<p class="small faint">Peniaga belum memberi penjelasan.</p>'}
+              </div>
+            </div>
+            ${d.status === 'OPEN' ? `
+              <div class="row-wrap">
+                <button class="btn btn-primary" data-act="resolveDispute" data-id="${d.id}" data-total="${o.total}" data-code="${esc(o.code)}">${icon('shield')} Buat keputusan</button>
+                <button class="btn btn-ghost" data-act="adminChat" data-user="${o.buyer.id}">${icon('chat')} Chat pembeli</button>
+                <button class="btn btn-ghost" data-act="adminChat" data-user="${o.shop.owner_id}">${icon('chat')} Chat peniaga</button>
+              </div>` : `<div class="alert success small">${icon('checkCircle')}<div><b>${outcomeText(d)}</b> – ${esc(d.admin_note || '')}<div class="xs faint">${fmtDateTime(d.resolved_at)}</div></div></div>`}
+          </section>`;
+      }).join('') : `<div class="card">${emptyState('shield', 'Tiada pertikaian', status === 'OPEN' ? 'Tiada laporan masalah yang perlu disemak.' : 'Tiada rekod.')}</div>`}
+    </div>`;
 }
 
 async function topups(_, query) {
@@ -126,7 +168,7 @@ async function withdrawals(_, query) {
 }
 
 const filterChips = (tab, current, list = ['PENDING', 'APPROVED', 'REJECTED', 'ALL']) => {
-  const label = { PENDING: 'Menunggu', APPROVED: 'Disahkan', PAID: 'Dibayar', REJECTED: 'Ditolak', ALL: 'Semua' };
+  const label = { PENDING: 'Menunggu', APPROVED: 'Disahkan', PAID: 'Dibayar', REJECTED: 'Ditolak', ALL: 'Semua', OPEN: 'Terbuka', RESOLVED: 'Selesai' };
   return `<div class="chips">${list.map((s) => `<a class="chip ${current === s ? 'active' : ''}" href="#/admin/${tab}?s=${s}">${label[s]}</a>`).join('')}</div>`;
 };
 
@@ -243,13 +285,43 @@ Object.assign(actions, {
       foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="creditForm">Simpan</button>`
     });
   },
+  resolveDispute(el) {
+    const total = Number(el.dataset.total);
+    openModal({
+      title: `Keputusan pertikaian #${el.dataset.code}`,
+      body: `
+        <form id="resolveForm" data-form="resolveDispute" data-id="${el.dataset.id}" data-total="${total}" class="stack">
+          <p class="small muted">Jumlah dibekukan: <b>${rm(total)}</b>. Keputusan ini muktamad dan wang akan dipindahkan serta-merta.</p>
+          <label class="radio-card"><input type="radio" name="outcome" value="REFUND" checked data-change="resolveOutcome"><div><div class="bold small">Pulangan penuh kepada pembeli</div><div class="xs muted">${rm(total)} kembali ke dompet pembeli · pesanan dibatalkan</div></div></label>
+          <label class="radio-card"><input type="radio" name="outcome" value="RELEASE" data-change="resolveOutcome"><div><div class="bold small">Lepaskan kepada peniaga</div><div class="xs muted">Aduan tidak disokong · peniaga menerima bayaran penuh</div></div></label>
+          <label class="radio-card"><input type="radio" name="outcome" value="SPLIT" data-change="resolveOutcome"><div><div class="bold small">Bahagikan</div><div class="xs muted">Sebahagian dipulangkan kepada pembeli, baki kepada peniaga</div></div></label>
+          <div class="field hidden" id="splitField"><label>Jumlah dipulangkan kepada pembeli (RM)</label><div class="input-prefix"><span>RM</span><input class="input" name="refund" type="number" min="0.01" max="${(total - 1) / 100}" step="0.01"></div></div>
+          <div class="field"><label>Sebab keputusan (dimaklumkan kepada kedua-dua pihak) *</label><textarea class="input" name="note" required minlength="5" maxlength="500" rows="3"></textarea></div>
+        </form>`,
+      foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="resolveForm">Sahkan keputusan</button>`
+    });
+  },
   async adminChat(el) {
     const { chat } = await api('POST', '/api/chats', { userId: Number(el.dataset.user) });
     location.hash = `#/chat/${chat.id}`;
   }
 });
 
+changes.resolveOutcome = (el) => {
+  const split = document.getElementById('splitField');
+  split.classList.toggle('hidden', el.value !== 'SPLIT');
+  split.querySelector('input').required = el.value === 'SPLIT';
+};
+
 Object.assign(forms, {
+  async resolveDispute(data, form) {
+    await api('POST', `/api/admin/disputes/${form.dataset.id}/resolve`, {
+      outcome: data.outcome, note: data.note, refund: data.outcome === 'SPLIT' ? toSen(data.refund) : undefined
+    });
+    closeOverlay();
+    toast('Keputusan direkodkan dan wang telah dipindahkan.', 'success');
+    refresh();
+  },
   async creditUser(data, form) {
     await api('POST', `/api/admin/users/${form.dataset.id}/credit`, { amount: toSen(data.amount), note: data.note });
     closeOverlay();

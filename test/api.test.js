@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 const PORT = 3900 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -13,7 +14,7 @@ let server;
 
 before(async () => {
   server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], {
-    env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, ADMIN_PASSWORD: 'admin-pass-123', DEMO: '1' },
+    env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, ADMIN_PASSWORD: 'admin-pass-123', DEMO: '1', RELEASE_SWEEP_MS: '200' },
     stdio: 'pipe'
   });
   for (let i = 0; i < 50; i++) {
@@ -37,13 +38,30 @@ function client() {
     return { status: res.status, body: await res.json() };
   };
 }
+const sessions = new Map(); // reuse logins so the login rate limit isn't hit
 async function loginAs(email, password = 'demo1234') {
+  if (sessions.has(email)) return sessions.get(email);
   const c = client();
   const r = await c('POST', '/api/auth/login', { email, password });
   assert.equal(r.status, 200, r.body.error);
+  sessions.set(email, c);
   return c;
 }
 const balance = async (c) => (await c('GET', '/api/wallet')).body.balance;
+
+async function placeOrder(stu, shopPrefix = 'Nasi Lemak', qty = 2) {
+  const shop = (await stu('GET', '/api/shops')).body.shops.find((s) => s.name.startsWith(shopPrefix));
+  const item = (await stu('GET', `/api/shops/${shop.id}`)).body.items[0];
+  const r = await stu('POST', '/api/orders', { shopId: shop.id, items: [{ id: item.id, qty }], payment: 'WALLET', fulfilment: 'PICKUP' });
+  assert.equal(r.status, 200, r.body.error);
+  return r.body.order;
+}
+async function sellerCompletes(ven, id) {
+  for (const status of ['ACCEPTED', 'READY', 'COMPLETED']) {
+    const s = await ven('POST', `/api/orders/${id}/status`, { status });
+    assert.equal(s.status, 200, s.body.error);
+  }
+}
 
 test('wallet order is held, then paid to seller on completion', async () => {
   const stu = await loginAs('pelajar@demo.upsi');
@@ -65,11 +83,12 @@ test('wallet order is held, then paid to seller on completion', async () => {
   const id = r.body.order.id;
   // Buyer cannot accept their own order.
   assert.equal((await stu('POST', `/api/orders/${id}/status`, { status: 'ACCEPTED' })).status, 400);
-  for (const status of ['ACCEPTED', 'READY', 'COMPLETED']) {
-    const s = await ven('POST', `/api/orders/${id}/status`, { status });
-    assert.equal(s.status, 200, s.body.error);
-  }
+  await sellerCompletes(ven, id);
+  assert.equal(await balance(ven), venBefore, 'seller-marked completion keeps money held for the buyer');
+  assert.equal((await ven('POST', `/api/orders/${id}/confirm`)).status, 403, 'seller cannot release their own payment');
+  assert.equal((await stu('POST', `/api/orders/${id}/confirm`)).status, 200);
   assert.equal(await balance(ven), venBefore + total);
+  assert.equal((await stu('POST', `/api/orders/${id}/confirm`)).status, 400, 'cannot release twice');
 
   const rev = await stu('POST', `/api/orders/${id}/review`, { rating: 5, comment: 'Mantap' });
   assert.equal(rev.status, 200);
@@ -164,4 +183,95 @@ test('chat messages are private to participants', async () => {
   const outsider = await loginAs('print@demo.upsi');
   if (shop.name.startsWith('Runner')) return; // outsider happens to be the owner
   assert.equal((await outsider('GET', `/api/chats/${chat.id}/messages`)).status, 404);
+});
+
+test('buyer confirming receipt pays the seller immediately', async () => {
+  const stu = await loginAs('pelajar@demo.upsi');
+  const ven = await loginAs('nasilemak@demo.upsi');
+  const o = await placeOrder(stu);
+  const before = await balance(ven);
+  await ven('POST', `/api/orders/${o.id}/status`, { status: 'ACCEPTED' });
+  await ven('POST', `/api/orders/${o.id}/status`, { status: 'READY' });
+  assert.equal((await stu('POST', `/api/orders/${o.id}/status`, { status: 'COMPLETED' })).status, 200);
+  assert.equal(await balance(ven), before + o.total);
+});
+
+test('dispute freezes money and full refund returns it to the buyer', async () => {
+  const stu = await loginAs('pelajar@demo.upsi');
+  const ven = await loginAs('nasilemak@demo.upsi');
+  const admin = await loginAs('admin@upsihub.local', 'admin-pass-123');
+  const stuStart = await balance(stu);
+  const venStart = await balance(ven);
+  const o = await placeOrder(stu);
+  await sellerCompletes(ven, o.id);
+
+  assert.equal((await ven('POST', `/api/orders/${o.id}/dispute`, { reason: 'OTHER', details: 'Bukan pembeli ni' })).status, 403);
+  assert.equal((await stu('POST', `/api/orders/${o.id}/dispute`, { reason: 'NOT_RECEIVED', details: 'pendek' })).status, 400, 'details too short');
+  const d = await stu('POST', `/api/orders/${o.id}/dispute`, { reason: 'NOT_RECEIVED', details: 'Saya tidak terima apa-apa langsung.' });
+  assert.equal(d.status, 200, d.body.error);
+  assert.equal(d.body.order.status, 'DISPUTED');
+  assert.equal((await stu('POST', `/api/orders/${o.id}/dispute`, { reason: 'OTHER', details: 'Laporan kedua sekali lagi' })).status, 409);
+  // Nobody can move a disputed order or release its money outside the admin decision.
+  assert.equal((await stu('POST', `/api/orders/${o.id}/confirm`)).status, 400);
+  assert.equal((await ven('POST', `/api/orders/${o.id}/status`, { status: 'COMPLETED' })).status, 400);
+
+  assert.equal((await ven('POST', `/api/orders/${o.id}/dispute/respond`, { response: 'Sudah dihantar ke bilik jam 1 petang.' })).status, 200);
+  const { body: { disputes } } = await admin('GET', '/api/admin/disputes');
+  const dispute = disputes.find((x) => x.order_id === o.id);
+  assert.equal(dispute.seller_response, 'Sudah dihantar ke bilik jam 1 petang.');
+
+  const r = await admin('POST', `/api/admin/disputes/${dispute.id}/resolve`, { outcome: 'REFUND', note: 'Tiada bukti penghantaran.' });
+  assert.equal(r.status, 200, r.body.error);
+  assert.equal(await balance(stu), stuStart);
+  assert.equal(await balance(ven), venStart);
+  assert.equal((await admin('POST', `/api/admin/disputes/${dispute.id}/resolve`, { outcome: 'RELEASE', note: 'Cuba lagi' })).status, 400, 'cannot resolve twice');
+  assert.equal((await stu('GET', `/api/orders/${o.id}`)).body.order.status, 'CANCELLED');
+});
+
+test('split decision divides held money exactly', async () => {
+  const stu = await loginAs('pelajar@demo.upsi');
+  const ven = await loginAs('nasilemak@demo.upsi');
+  const admin = await loginAs('admin@upsihub.local', 'admin-pass-123');
+  const stuStart = await balance(stu);
+  const venStart = await balance(ven);
+  const o = await placeOrder(stu);
+  await ven('POST', `/api/orders/${o.id}/status`, { status: 'ACCEPTED' });
+  const opened = await stu('POST', `/api/orders/${o.id}/dispute`, { reason: 'WRONG_ITEM', details: 'Dapat satu sahaja, order dua.' });
+  assert.equal(opened.status, 200, opened.body.error);
+  const dispute = (await admin('GET', '/api/admin/disputes')).body.disputes.find((x) => x.order_id === o.id);
+  assert.equal((await admin('POST', `/api/admin/disputes/${dispute.id}/resolve`, { outcome: 'SPLIT', refund: o.total, note: 'Tidak sah' })).status, 400, 'split must leave something for each side');
+  const refund = Math.floor(o.total / 2);
+  const res = await admin('POST', `/api/admin/disputes/${dispute.id}/resolve`, { outcome: 'SPLIT', refund, note: 'Satu item sahaja dihantar.' });
+  assert.equal(res.status, 200, res.body.error);
+  assert.equal(await balance(stu), stuStart - o.total + refund);
+  assert.equal(await balance(ven), venStart + o.total - refund);
+});
+
+test('held money auto-releases to the seller after the dispute window', async () => {
+  const stu = await loginAs('pelajar@demo.upsi');
+  const ven = await loginAs('nasilemak@demo.upsi');
+  const o = await placeOrder(stu);
+  await sellerCompletes(ven, o.id);
+  const before = await balance(ven);
+  const held = (await stu('GET', `/api/orders/${o.id}`)).body.order;
+  assert.equal(held.payout, 'HELD');
+  assert.ok(held.release_at > Date.now() + 47 * 3600e3);
+
+  // Fast-forward: pretend the 48 hours have passed.
+  const db = new DatabaseSync(path.join(dataDir, 'upsihub.db'));
+  db.prepare('UPDATE orders SET release_at = ? WHERE id = ?').run(Date.now() - 1, o.id);
+  db.close();
+  for (let i = 0; i < 30 && (await balance(ven)) === before; i++) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(await balance(ven), before + o.total);
+  assert.equal((await stu('POST', `/api/orders/${o.id}/dispute`, { reason: 'OTHER', details: 'Terlambat untuk melapor.' })).status, 400, 'too late once released');
+});
+
+test('cash orders cannot be disputed in-app', async () => {
+  const stu = await loginAs('pelajar@demo.upsi');
+  const ven = await loginAs('nasilemak@demo.upsi');
+  const shop = (await stu('GET', '/api/shops')).body.shops.find((s) => s.name.startsWith('Nasi Lemak'));
+  const item = (await stu('GET', `/api/shops/${shop.id}`)).body.items[0];
+  const o = (await stu('POST', '/api/orders', { shopId: shop.id, items: [{ id: item.id, qty: 1 }], payment: 'CASH', fulfilment: 'PICKUP' })).body.order;
+  await ven('POST', `/api/orders/${o.id}/status`, { status: 'ACCEPTED' });
+  assert.equal((await stu('POST', `/api/orders/${o.id}/dispute`, { reason: 'OTHER', details: 'Masalah dengan pesanan tunai.' })).status, 400);
 });

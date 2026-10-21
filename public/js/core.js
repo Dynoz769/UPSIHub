@@ -186,7 +186,8 @@ export function statusBadge(status) {
   const map = {
     PENDING: ['amber', 'Menunggu'], ACCEPTED: ['blue', 'Disediakan'], READY: ['blue', 'Sedia'], COMPLETED: ['green', 'Selesai'],
     CANCELLED: ['red', 'Dibatalkan'], REJECTED: ['red', 'Ditolak'], APPROVED: ['green', 'Lulus'], SUSPENDED: ['red', 'Digantung'],
-    PAID: ['green', 'Dibayar'], active: ['green', 'Aktif'], suspended: ['red', 'Digantung']
+    PAID: ['green', 'Dibayar'], active: ['green', 'Aktif'], suspended: ['red', 'Digantung'],
+    DISPUTED: ['amber', 'Dilaporkan'], OPEN: ['amber', 'Dalam semakan'], RESOLVED: ['green', 'Selesai']
   };
   const [c, l] = map[status] || ['', status];
   return `<span class="badge ${c}"><span class="bullet"></span>${esc(l)}</span>`;
