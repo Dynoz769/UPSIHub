@@ -71,7 +71,35 @@ export function thumb(item, cls = '') {
 export const campusName = (c) => state.config?.campuses?.[c] || c;
 
 // ---------- API ----------
+// GAS: the page is served by Google Apps Script and talks to it through google.script.run
+// with a session token (no cookies or server push there).
+export const GAS = typeof google !== 'undefined' && !!google.script?.run;
+let memToken = null;
+export function getToken() { try { return localStorage.getItem('uh_token') || memToken; } catch { return memToken; } }
+function setToken(t) {
+  memToken = t || null;
+  try { if (t) localStorage.setItem('uh_token', t); else localStorage.removeItem('uh_token'); } catch {}
+}
+function gasCall(method, url, body) {
+  return new Promise((resolve, reject) => {
+    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).api(method, url, method === 'GET' ? null : body || {}, getToken());
+  });
+}
 export async function api(method, url, body) {
+  if (GAS) {
+    let res;
+    try { res = JSON.parse(await gasCall(method, url, body)); } catch { throw new Error('Tiada sambungan internet. Sila cuba lagi.'); }
+    const data = res.body || {};
+    if (data.token) setToken(data.token);
+    if (url === '/api/auth/logout') setToken(null);
+    if (res.status >= 400) {
+      const err = new Error(data.error || `Ralat ${res.status}`);
+      err.status = res.status;
+      if (res.status === 401 && state.me) { state.me = null; emit('uh:auth'); }
+      throw err;
+    }
+    return data;
+  }
   const opts = { method, credentials: 'same-origin', headers: {} };
   if (method !== 'GET') {
     opts.headers['Content-Type'] = 'application/json';

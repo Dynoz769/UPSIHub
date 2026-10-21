@@ -7,6 +7,7 @@ function nextHash(query) {
 
 page('/login', (_, query) => {
   if (state.me) { location.replace(nextHash(query)); return ''; }
+  if (state.config.needs_admin) return setupAdminPage();
   const mode = query.get('mode') === 'register' ? 'register' : 'login';
   const campuses = state.config.campuses;
   const nextQs = query.get('next') ? `&next=${encodeURIComponent(query.get('next'))}` : '';
@@ -35,7 +36,7 @@ page('/login', (_, query) => {
                 <button class="btn btn-ghost btn-sm" data-act="demoLogin" data-email="pelajar@demo.upsi">pelajar@demo.upsi</button>
                 <button class="btn btn-ghost btn-sm" data-act="demoLogin" data-email="nasilemak@demo.upsi">nasilemak@demo.upsi</button>
               </div>
-              <span class="faint">Akaun admin dipaparkan di konsol pelayan semasa pertama kali dijalankan.</span>
+              ${state.config.platform === 'gas' ? '' : '<span class="faint">Akaun admin dipaparkan di konsol pelayan semasa pertama kali dijalankan.</span>'}
             </div>` : ''}` : `
           <form data-form="register" class="stack" data-next="${esc(nextHash(query))}">
             <div class="field"><label>Nama penuh *</label><input class="input" name="name" required minlength="2" maxlength="80" autocomplete="name"></div>
@@ -52,6 +53,31 @@ page('/login', (_, query) => {
       </div>
     </div>`;
 });
+
+// First run on a fresh install (Google Apps Script): the first visitor creates the admin account.
+function setupAdminPage() {
+  return `
+    <div class="auth-wrap">
+      <div class="card pad-lg xnarrow stack">
+        <div class="center stack-sm">
+          <span class="brand-mark" style="margin:0 auto;width:52px;height:52px;font-size:24px">U</span>
+          <h1 style="font-size:24px;font-weight:850">Selamat datang ke UPSIHub</h1>
+          <p class="small muted">Sistem baru dipasang. Cipta akaun pentadbir (admin) pertama untuk mengurus kedai, dompet & aduan.</p>
+        </div>
+        <form data-form="setupAdmin" class="stack" data-next="#/admin">
+          <div class="field"><label>Nama penuh *</label><input class="input" name="name" required minlength="2" maxlength="80" autocomplete="name"></div>
+          <div class="field"><label>E-mel *</label><input class="input" name="email" type="email" required autocomplete="email"></div>
+          <div class="field"><label>Kata laluan * <span class="faint">(min 8 aksara)</span></label><input class="input" name="password" type="password" required minlength="8" autocomplete="new-password"></div>
+          <button class="btn btn-primary btn-lg btn-block" type="submit">${icon('shield')} Cipta Akaun Admin</button>
+        </form>
+      </div>
+    </div>`;
+}
+forms.setupAdmin = async (data, form) => {
+  const { user } = await api('POST', '/api/setup/admin', data);
+  state.config.needs_admin = false;
+  await afterAuth(form, user, 'Akaun admin dicipta. Sistem sedia digunakan!');
+};
 
 async function afterAuth(form, user, welcome) {
   state.me = user;

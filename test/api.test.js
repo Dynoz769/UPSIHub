@@ -11,9 +11,23 @@ const PORT = 3900 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
 const dataDir = mkdtempSync(path.join(tmpdir(), 'upsihub-test-'));
 let server;
+// UPSIHUB_SERVER=gas/harness/server.mjs runs the same tests against the Google Apps Script build.
+const SERVER = process.env.UPSIHUB_SERVER || 'server.js';
+const GAS = SERVER.includes('gas');
+// Edits a row behind the app's back (like changing the database or spreadsheet by hand).
+async function editRow(table, id, sql, params, gasChange) {
+  if (GAS) {
+    const r = await fetch(`${BASE}/__test/update`, { method: 'POST', body: JSON.stringify({ table, id, ...gasChange }) });
+    assert.equal(r.status, 200);
+    return;
+  }
+  const db = new DatabaseSync(path.join(dataDir, 'upsihub.db'));
+  db.prepare(sql).run(...params, id);
+  db.close();
+}
 
 before(async () => {
-  server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], {
+  server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', SERVER], {
     env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, ADMIN_PASSWORD: 'admin-pass-123', DEMO: '1', RELEASE_SWEEP_MS: '200' },
     stdio: 'pipe'
   });
@@ -170,9 +184,12 @@ test('access control: guests, non-owners and non-admins are blocked', async () =
   assert.equal((await stu('GET', '/api/orders/1')).status, 200);
   const other = await loginAs('print@demo.upsi');
   assert.equal((await other('GET', '/api/orders/1')).status, 404, 'unrelated user cannot see order');
-  // Form-encoded cross-site posts are rejected.
-  const res = await fetch(`${BASE}/api/auth/logout`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'a=1' });
-  assert.equal(res.status, 415);
+  // Form-encoded cross-site posts are rejected. (Apps Script has no cookies or HTTP API:
+  // the token only travels through google.script.run, so there is nothing to forge.)
+  if (!GAS) {
+    const res = await fetch(`${BASE}/api/auth/logout`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'a=1' });
+    assert.equal(res.status, 415);
+  }
 });
 
 test('chat messages are private to participants', async () => {
@@ -258,9 +275,8 @@ test('held money auto-releases to the seller after the dispute window', async ()
   assert.ok(held.release_at > Date.now() + 47 * 3600e3);
 
   // Fast-forward: pretend the 48 hours have passed.
-  const db = new DatabaseSync(path.join(dataDir, 'upsihub.db'));
-  db.prepare('UPDATE orders SET release_at = ? WHERE id = ?').run(Date.now() - 1, o.id);
-  db.close();
+  const past = Date.now() - 1;
+  await editRow('orders', o.id, 'UPDATE orders SET release_at = ? WHERE id = ?', [past], { set: { release_at: past } });
   for (let i = 0; i < 30 && (await balance(ven)) === before; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(await balance(ven), before + o.total);
   assert.equal((await stu('POST', `/api/orders/${o.id}/dispute`, { reason: 'OTHER', details: 'Terlambat untuk melapor.' })).status, 400, 'too late once released');

@@ -11,9 +11,23 @@ const PORT = 4000 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
 const dataDir = mkdtempSync(path.join(tmpdir(), 'upsihub-mod-'));
 let server;
+// UPSIHUB_SERVER=gas/harness/server.mjs runs the same tests against the Google Apps Script build.
+const SERVER = process.env.UPSIHUB_SERVER || 'server.js';
+const GAS = SERVER.includes('gas');
+// Edits a row behind the app's back (like changing the database or spreadsheet by hand).
+async function editRow(table, id, sql, params, gasChange) {
+  if (GAS) {
+    const r = await fetch(`${BASE}/__test/update`, { method: 'POST', body: JSON.stringify({ table, id, ...gasChange }) });
+    assert.equal(r.status, 200);
+    return;
+  }
+  const db = new DatabaseSync(path.join(dataDir, 'upsihub.db'));
+  db.prepare(sql).run(...params, id);
+  db.close();
+}
 
 before(async () => {
-  server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], {
+  server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', SERVER], {
     env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, ADMIN_PASSWORD: 'admin-pass-123', DEMO: '1' },
     stdio: 'pipe'
   });
@@ -262,9 +276,7 @@ test('admin manages categories; renaming carries shops along', async () => {
 
 function shiftStart(id, days) {
   // Pretend the car was collected `days` days ago.
-  const db = new DatabaseSync(path.join(dataDir, 'upsihub.db'));
-  db.prepare('UPDATE orders SET start_at = start_at - ? WHERE id = ?').run(days * 864e5, id);
-  db.close();
+  return editRow('orders', id, 'UPDATE orders SET start_at = start_at - ? WHERE id = ?', [days * 864e5], { add: { start_at: -days * 864e5 } });
 }
 
 test('rental without a return date: car blocked until returned, actual days charged', async () => {
@@ -284,7 +296,7 @@ test('rental without a return date: car blocked until returned, actual days char
 
   await drv('POST', `/api/orders/${o.id}/status`, { status: 'ACCEPTED' });
   await drv('POST', `/api/orders/${o.id}/status`, { status: 'READY' });
-  shiftStart(o.id, 3);
+  await shiftStart(o.id, 3);
   assert.equal((await drv('POST', `/api/orders/${o.id}/status`, { status: 'COMPLETED', return_date: ymd(5) })).status, 400, 'return date cannot be in the future');
   const done = await drv('POST', `/api/orders/${o.id}/status`, { status: 'COMPLETED', return_date: ymd(0) });
   assert.equal(done.status, 200, done.body.error);
@@ -311,7 +323,7 @@ test('open rental with an empty wallet: shortfall comes out of the deposit', asy
   const drvStart = await balance(drv);
   await drv('POST', `/api/orders/${r.body.order.id}/status`, { status: 'ACCEPTED' });
   await drv('POST', `/api/orders/${r.body.order.id}/status`, { status: 'READY' });
-  shiftStart(r.body.order.id, 3);
+  await shiftStart(r.body.order.id, 3);
   const done = await drv('POST', `/api/orders/${r.body.order.id}/status`, { status: 'COMPLETED', return_date: ymd(0) });
   assert.equal(done.status, 200, done.body.error);
   assert.equal(done.body.order.deposit, 0, 'whole deposit used towards rent');

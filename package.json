@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "build:gas": "node gas/build.mjs",
+    "test:gas": "node gas/build.mjs && UPSIHUB_SERVER=gas/harness/server.mjs node --test"
   },
   "engines": {
     "node": ">=22.13"
