@@ -1,7 +1,7 @@
 import {
   state, api, esc, rm, icon, avatar, toast, timeAgo, actions, forms, changes, inputs, routes, emit, onPage,
   clearPageListeners, closeOverlay, overlayOpen, setBusy, uploadImage, skeletonView, cartCount, emptyState, hooks,
-  openGallery, redrawImagesField
+  openGallery, redrawImagesField, GAS
 } from './core.js';
 import './pages/market.js';
 import './pages/explore.js';
@@ -108,33 +108,67 @@ async function loadMe() {
   if (state.me) connectStream(); else disconnectStream();
 }
 function disconnectStream() { stream?.close(); stream = null; }
+
+function onMessage(msg) {
+  if (msg.sender_id !== state.me?.id && state.activeChat !== msg.conversation_id) {
+    state.unread.chat += 1;
+    renderShell();
+    toast(msg.body || '📷 Gambar', 'info', { title: 'Mesej baharu', link: `#/chat/${msg.conversation_id}` });
+  }
+  emit('uh:message', msg);
+}
+function onNotification(n) {
+  if (n.link?.startsWith('#/chat/')) return; // chat already has its own toast
+  state.unread.notifications += 1;
+  renderShell();
+  toast(n.body || '', 'info', { title: n.title, link: n.link, timeout: 6000 });
+}
+function onWallet(balance) {
+  if (state.me) state.me.balance = balance;
+  document.querySelectorAll('[data-balance]').forEach((el) => { el.textContent = rm(balance); });
+  emit('uh:wallet', { balance });
+}
+
 function connectStream() {
   if (stream) return;
+  if (GAS) { stream = pollStream(); return; }
   stream = new EventSource('/api/stream');
-  stream.addEventListener('message', (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg.sender_id !== state.me?.id && state.activeChat !== msg.conversation_id) {
-      state.unread.chat += 1;
-      renderShell();
-      toast(msg.body || '📷 Gambar', 'info', { title: 'Mesej baharu', link: `#/chat/${msg.conversation_id}` });
-    }
-    emit('uh:message', msg);
-  });
-  stream.addEventListener('notification', (e) => {
-    const n = JSON.parse(e.data);
-    if (n.link?.startsWith('#/chat/')) return; // chat already has its own toast
-    state.unread.notifications += 1;
-    renderShell();
-    toast(n.body || '', 'info', { title: n.title, link: n.link, timeout: 6000 });
-  });
+  stream.addEventListener('message', (e) => onMessage(JSON.parse(e.data)));
+  stream.addEventListener('notification', (e) => onNotification(JSON.parse(e.data)));
   stream.addEventListener('order', (e) => emit('uh:order', JSON.parse(e.data)));
   stream.addEventListener('read', (e) => emit('uh:read', JSON.parse(e.data)));
-  stream.addEventListener('wallet', (e) => {
-    const { balance } = JSON.parse(e.data);
-    if (state.me) state.me.balance = balance;
-    document.querySelectorAll('[data-balance]').forEach((el) => { el.textContent = rm(balance); });
-    emit('uh:wallet', { balance });
-  });
+  stream.addEventListener('wallet', (e) => onWallet(JSON.parse(e.data).balance));
+}
+
+// Apps Script has no server push, so ask for changes every few seconds (slower in a
+// background tab). Windows overlap a little to tolerate clock drift; ids are de-duplicated.
+function pollStream() {
+  let closed = false, busy = false, timer = null, since = 0, balance = state.me?.balance;
+  const seen = { m: new Set(), n: new Set(), o: new Map(), r: new Map() };
+  const once = (set, id) => (set.has(id) ? false : (set.add(id), true));
+  async function tick() {
+    if (closed || busy) return;
+    busy = true;
+    try {
+      const d = await api('GET', `/api/poll?since=${since ? since - 30000 : 0}`);
+      if (closed) return;
+      if (d.changed && since) {
+        d.messages.forEach((m) => { if (once(seen.m, m.id)) onMessage(m); });
+        d.notifications.forEach((n) => { if (once(seen.n, n.id)) onNotification(n); });
+        d.orders.forEach((o) => { if (seen.o.get(o.id) !== o.updated_at) { seen.o.set(o.id, o.updated_at); emit('uh:order', o); } });
+        d.reads.forEach((r) => { if (seen.r.get(r.conversation_id) !== r.at) { seen.r.set(r.conversation_id, r.at); emit('uh:read', r); } });
+        if (d.balance !== balance) { balance = d.balance; onWallet(balance); }
+      }
+      since = d.now;
+    } catch {}
+    busy = false;
+    clearTimeout(timer);
+    if (!closed) timer = setTimeout(tick, document.hidden ? 60000 : 6000);
+  }
+  const wake = () => { if (!document.hidden && !closed) { clearTimeout(timer); tick(); } };
+  document.addEventListener('visibilitychange', wake);
+  tick();
+  return { close() { closed = true; clearTimeout(timer); document.removeEventListener('visibilitychange', wake); } };
 }
 
 // =====================================================================
@@ -338,8 +372,9 @@ hooks.renderShell = renderShell;
     view.innerHTML = emptyState('alert', 'Tidak dapat menyambung ke pelayan', err.message, '<button class="btn btn-primary" data-act="reload">Cuba lagi</button>');
     return;
   }
+  if (state.config.needs_admin && !state.me && !location.hash.startsWith('#/login')) location.replace('#/login');
   router();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('/sw.js').catch(() => {});
+  if (!GAS && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('/sw.js').catch(() => {});
 })();
 
 export { router, renderShell, loadMe, connectStream };

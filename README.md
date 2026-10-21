@@ -2,11 +2,61 @@
 
 Platform dalam talian untuk pelajar UPSI: pasar kampus, pesanan, dompet digital dan chat dalam satu sistem.
 Ia tidak bergantung pada perkhidmatan pihak ketiga. Tiada WhatsApp, tiada gerbang pembayaran (payment gateway) dan tiada CDN.
-Semuanya berjalan pada pelayan anda sendiri.
+Semuanya berjalan pada pelayan anda sendiri, atau **percuma di akaun Google anda** (lihat di bawah).
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Dynoz769/UPSIHub)
 
-## Lancar dalam talian (Render)
+## Lancar dalam talian PERCUMA (Google Apps Script)
+
+Cara paling mudah dan **percuma sepenuhnya**: tiada kad kredit, tiada pelayan, tiada pemasangan.
+Sistem berjalan di Google menggunakan akaun Gmail anda:
+
+- **Kod** berjalan di Google Apps Script.
+- **Database** ialah satu fail Google Sheets ("UPSIHub Database"), dengan satu tab bagi setiap jadual.
+- **Gambar** disimpan dalam folder Drive "UPSIHub Uploads".
+- **Sandaran** dibuat setiap hari sebagai salinan Sheets dalam folder "UPSIHub Backups" (14 salinan terakhir disimpan).
+
+Anda hanya perlu dua fail dari folder [`gas/dist/`](gas/dist): `Code.gs` dan `Index.html`.
+
+1. Buka <https://script.google.com>, kemudian tekan **New project** (Projek baharu). Namakan projek itu `UPSIHub`.
+2. Dalam fail `Code.gs` yang sedia ada, padam semua isinya. Salin dan tampal seluruh kandungan [`gas/dist/Code.gs`](gas/dist/Code.gs).
+3. Tekan **＋** di sebelah *Files*, pilih **HTML**, dan namakan fail itu `Index` (tanpa `.html`). Padam isinya, kemudian tampal seluruh kandungan [`gas/dist/Index.html`](gas/dist/Index.html).
+4. Tekan **Save** (ikon cakera). Di bar atas, pilih fungsi **`setup`** dan tekan **▶ Run**.
+   - Google akan meminta kebenaran. Pilih akaun anda, tekan *Advanced › Go to UPSIHub (unsafe) › Allow*.
+   - Amaran "Google hasn't verified this app" adalah biasa kerana skrip ini milik anda sendiri.
+   - Selepas selesai, log akan memaparkan pautan database Google Sheets anda.
+5. *(Pilihan)* Untuk data contoh (kedai, iklan dan akaun demo dengan kata laluan `demo1234`), pilih fungsi **`setupDemo`** dan tekan **▶ Run**.
+6. Tekan **Deploy › New deployment**. Pada ikon ⚙️ pilih **Web app**, dan tetapkan:
+   - *Execute as*: **Me**
+   - *Who has access*: **Anyone**
+
+   Tekan **Deploy** dan salin **Web app URL** (`https://script.google.com/macros/s/…/exec`). Itulah alamat laman UPSIHub anda; kongsikan kepada pelajar.
+7. Buka URL itu. Pelawat pertama akan diminta **mencipta akaun admin**, jadi buat langkah ini sendiri dahulu.
+8. Di *Panel Admin › Tetapan*, isi akaun bank atau kod QR untuk tambah nilai dompet.
+
+**Kemas kini kod kemudian:** tampal fail baharu, kemudian *Deploy › Manage deployments › ✏️ › Version: New version › Deploy*. URL kekal sama.
+
+Fungsi tambahan yang boleh dijalankan dari editor:
+
+| Fungsi | Kegunaan |
+|---|---|
+| `setup` | Cipta database, folder dan jadual automatik (selamat dijalankan semula) |
+| `setupDemo` | Tambah data contoh |
+| `hideDemoHint` | Sembunyikan kotak "akaun demo" di halaman log masuk |
+| `clearCache` | Jalankan selepas anda mengubah Google Sheets secara manual |
+| `runBackup` | Buat sandaran serta-merta |
+
+Had versi Google yang perlu diketahui:
+
+- Setiap tindakan mengambil masa ±1–2 saat kerana data disimpan dalam Sheets.
+- Chat dan notifikasi disemak setiap 6 saat, bukan serta-merta.
+- Kuota percuma Google sesuai untuk komuniti ratusan pengguna aktif. Untuk ribuan pengguna serentak, gunakan versi Node (di bawah).
+- Akaun Google Workspace universiti mungkin menyekat perkongsian fail "sesiapa yang ada pautan". Jika itu berlaku, gambar hanya kelihatan kepada pengguna dalam domain yang sama. Gunakan akaun Gmail biasa untuk mengelakkan masalah ini.
+- Jangan ubah susunan baris tajuk (baris 1) dalam Google Sheets. Jika anda mengedit data secara manual, jalankan `clearCache`.
+
+Untuk pembangun, kod sumber versi Google berada di `gas/server/`. Jalankan `npm run build:gas` untuk menjana semula `gas/dist/`, dan `npm run test:gas` untuk menjalankan semua ujian integrasi terhadap simulasi Google.
+
+## Lancar dalam talian (Render, berbayar)
 
 1. Pastikan kod sudah ada dalam branch `main`. Butang Deploy membaca `render.yaml` dari branch utama.
 2. Tekan butang **Deploy to Render** di atas, kemudian log masuk Render menggunakan akaun GitHub.
@@ -157,6 +207,10 @@ src/security.js      hash kata laluan (scrypt), token, had kadar
 public/              aplikasi web (HTML/CSS/JS tanpa framework, ikon SVG sendiri)
 test/                ujian integrasi (teras + modul)
 legacy/              versi asal satu-fail (rujukan)
+gas/server/          versi Google Apps Script (Sheets sebagai database, Drive untuk gambar)
+gas/build.mjs        jana gas/dist/Code.gs + Index.html (UI yang sama, digabung satu fail)
+gas/harness/         simulasi Google (Sheets/Drive/Cache/Lock) untuk ujian di Node
+gas/dist/            dua fail untuk disalin ke script.google.com
 ```
 
 Keselamatan: kata laluan di-hash dengan scrypt, sesi menggunakan kuki HttpOnly + SameSite=Strict, CSP ketat (tiada skrip luar atau inline), semua input disahkan di pelayan, output di-escape untuk mengelakkan XSS, dan login, pendaftaran, mesej serta pindahan dihadkan kadarnya. Pindahan dan pengeluaran wang memerlukan kata laluan.

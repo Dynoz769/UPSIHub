@@ -11,9 +11,23 @@ const PORT = 4100 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
 const dataDir = mkdtempSync(path.join(tmpdir(), 'upsihub-db-'));
 let server;
+// UPSIHUB_SERVER=gas/harness/server.mjs runs the same tests against the Google Apps Script build.
+const SERVER = process.env.UPSIHUB_SERVER || 'server.js';
+const GAS = SERVER.includes('gas');
+// Edits a row behind the app's back (like changing the database or spreadsheet by hand).
+async function editRow(table, id, sql, params, gasChange) {
+  if (GAS) {
+    const r = await fetch(`${BASE}/__test/update`, { method: 'POST', body: JSON.stringify({ table, id, ...gasChange }) });
+    assert.equal(r.status, 200);
+    return;
+  }
+  const db = new DatabaseSync(path.join(dataDir, 'upsihub.db'));
+  db.prepare(sql).run(...params, id);
+  db.close();
+}
 
 before(async () => {
-  server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], {
+  server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', SERVER], {
     env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, ADMIN_PASSWORD: 'admin-pass-123', DEMO: '1' },
     stdio: 'pipe'
   });
@@ -56,7 +70,16 @@ async function upload(c) {
 }
 const openDb = () => new DatabaseSync(path.join(dataDir, 'upsihub.db'));
 
-test('database rules block corrupt money and ratings even outside the app', () => {
+test('health check flags data corrupted by hand in the spreadsheet', { skip: !GAS && 'Apps Script build only' }, async () => {
+  const admin = await as('admin@upsihub.local', 'admin-pass-123');
+  assert.deepEqual((await admin('GET', '/api/admin/system')).body.integrity, ['ok']);
+  await editRow('listings', 1, '', [], { set: { stock: -1 } });
+  assert.ok((await admin('GET', '/api/admin/system')).body.integrity.some((i) => /Stok negatif/.test(i)));
+  await editRow('listings', 1, '', [], { set: { stock: 1 } });
+  assert.deepEqual((await admin('GET', '/api/admin/system')).body.integrity, ['ok']);
+});
+
+test('database rules block corrupt money and ratings even outside the app', { skip: GAS && 'SQLite triggers (Node build only)' }, () => {
   const db = openDb();
   const tryRun = (sql, ...p) => { try { db.prepare(sql).run(...p); return null; } catch (e) { return e.message; } };
   assert.match(tryRun('UPDATE users SET balance = -100 WHERE id = 1'), /negatif/);
@@ -72,6 +95,17 @@ test('health check, backup and download (admin only)', async () => {
   const sys = (await admin('GET', '/api/admin/system')).body;
   assert.deepEqual(sys.integrity, ['ok']);
   assert.equal(sys.ledger_mismatches.length, 0);
+  const stu = await as('pelajar@demo.upsi');
+  if (GAS) {
+    // Backups are copies of the spreadsheet in the owner's Drive, opened from Drive.
+    const r = await admin('POST', '/api/admin/backups');
+    assert.equal(r.status, 200, r.body.error);
+    const b = (await admin('GET', '/api/admin/system')).body.backups.find((x) => x.name === r.body.name);
+    assert.match(b.url, /^https:\/\/drive\.google\.com\//);
+    assert.equal((await stu('POST', '/api/admin/backups')).status, 403);
+    assert.equal((await stu('GET', '/api/admin/system')).status, 403);
+    return;
+  }
   assert.ok(sys.triggers.length >= 10);
   assert.ok(sys.backups.length >= 1, 'a backup is taken on first start');
 
@@ -87,7 +121,6 @@ test('health check, backup and download (admin only)', async () => {
   copy.close();
 
   assert.equal((await admin('GET', '/api/admin/backups/..%2Fupsihub.db')).status, 404, 'no path traversal');
-  const stu = await as('pelajar@demo.upsi');
   assert.equal((await stu('GET', `/api/admin/backups/${r.body.name}`)).status, 403);
   assert.equal((await stu('POST', '/api/admin/backups')).status, 403);
 });

@@ -289,7 +289,7 @@ async function system() {
             <button class="btn btn-primary btn-sm" data-act="runBackup">${icon('refresh')} Sandaran sekarang</button></div>
           ${s.backups.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Fail</th><th>Saiz</th><th>Masa</th><th></th></tr></thead><tbody>
             ${s.backups.map((b) => `<tr><td class="mono xs">${esc(b.name)}</td><td class="small">${fmtBytes(b.size)}</td><td class="small faint">${fmtDateTime(b.created_at)}</td>
-              <td class="right"><a class="btn btn-ghost btn-sm" href="/api/admin/backups/${encodeURIComponent(b.name)}" download>${icon('upload')} Muat turun</a></td></tr>`).join('')}
+              <td class="right"><a class="btn btn-ghost btn-sm" ${b.url ? `href="${esc(b.url)}" target="_blank" rel="noopener"` : `href="/api/admin/backups/${encodeURIComponent(b.name)}" download`}>${icon('upload')} Muat turun</a></td></tr>`).join('')}
           </tbody></table></div>` : emptyState('package', 'Tiada sandaran', 'Tekan "Sandaran sekarang" untuk membuat salinan pertama.')}
           <div class="card-body"><p class="xs faint">Untuk memulihkan: hentikan pelayan, gantikan <code>data/upsihub.db</code> dengan fail sandaran, kemudian mulakan semula.</p></div>
         </section>
