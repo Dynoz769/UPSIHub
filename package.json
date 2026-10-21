@@ -1,0 +1,17 @@
+{
+  "name": "upsihub",
+  "version": "2.0.0",
+  "description": "UPSIHub - platform dalam talian sepenuhnya untuk pelajar UPSI: pasar kampus, pesanan, dompet digital & chat dalaman.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
