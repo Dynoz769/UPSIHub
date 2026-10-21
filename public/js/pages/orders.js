@@ -1,4 +1,12 @@
-import { state, api, esc, rm, icon, page, actions, forms, onPage, refresh, statusBadge, emptyState, fmtDateTime, timeAgo, openModal, closeOverlay, confirmDialog, toast, hooks, imageField } from '../core.js';
+import { state, api, esc, rm, icon, page, actions, forms, onPage, refresh, statusBadge, emptyState, fmtDateTime, fmtDay, fmtTime, fmtDate, timeAgo, openModal, closeOverlay, confirmDialog, toast, hooks, imageField, ORDER_KINDS, isBooking } from '../core.js';
+
+const kindOf = (o) => ORDER_KINDS[o.kind] || ORDER_KINDS.ORDER;
+// Short schedule text for bookings, e.g. "Sab 25 Okt, 09:00" or "25 Okt – 27 Okt (2 hari)".
+function schedule(o) {
+  if (o.kind === 'RENTAL') return `${fmtDay(o.start_at)} – ${fmtDay(o.end_at)} (${Math.round((o.end_at - o.start_at) / 864e5)} hari)`;
+  if (o.start_at) return `${fmtDay(o.start_at)}, ${fmtTime(o.start_at)}`;
+  return '';
+}
 
 const ACTIVE = ['PENDING', 'ACCEPTED', 'READY'];
 // Still needs attention: in progress, under dispute, or completed but money not yet released.
@@ -24,7 +32,8 @@ export function timeline(o) {
       <div class="fill" style="width:calc(${pct}% - ${pct ? 28 * pct / 100 : 0}px)"></div>
       ${STEPS.map(([s, label, ic], i) => {
         const ev = o.events.find((e) => e.status === s);
-        const lbl = s === 'READY' ? (o.fulfilment === 'DELIVERY' ? 'Dihantar' : 'Sedia diambil') : label;
+        const custom = kindOf(o).steps[i];
+        const lbl = o.kind === 'ORDER' && s === 'READY' ? (o.fulfilment === 'DELIVERY' ? 'Dihantar' : 'Sedia diambil') : custom || label;
         return `<div class="t ${i <= idx ? 'done' : ''} ${i === idx ? 'now' : ''}"><i>${icon(ic)}</i><span>${lbl}</span>${ev ? `<span class="xs faint">${new Date(ev.at).toLocaleTimeString('ms-MY', { hour: '2-digit', minute: '2-digit' })}</span>` : ''}</div>`;
       }).join('')}
     </div>`;
@@ -36,21 +45,23 @@ export function orderButtons(o, role) {
   const out = [];
   if (role === 'seller') {
     if (o.status === 'PENDING') out.push(b('ACCEPTED', 'Terima pesanan', 'btn-success'), b('REJECTED', 'Tolak', 'btn-danger', 'x'));
-    if (o.status === 'ACCEPTED') out.push(b('READY', o.fulfilment === 'DELIVERY' ? 'Sedang dihantar' : 'Sedia diambil', 'btn-primary', 'truck'), b('CANCELLED', 'Batal', 'btn-danger', 'x'));
-    if (o.status === 'READY') out.push(b('COMPLETED', 'Tandakan selesai', 'btn-success'));
+    const k = kindOf(o);
+    const readyLabel = o.kind === 'ORDER' ? (o.fulfilment === 'DELIVERY' ? 'Sedang dihantar' : 'Sedia diambil') : k.ready;
+    if (o.status === 'ACCEPTED') out.push(b('READY', readyLabel, 'btn-primary', k.ic), b('CANCELLED', 'Batal', 'btn-danger', 'x'));
+    if (o.status === 'READY') out.push(b('COMPLETED', k.done, 'btn-success'));
   }
   if (role === 'buyer') {
     if (o.status === 'PENDING') out.push(b('CANCELLED', 'Batalkan pesanan', 'btn-danger', 'x'));
     if (o.status === 'READY') out.push(b('COMPLETED', 'Sahkan telah terima', 'btn-success'));
     if (o.status === 'COMPLETED' && o.payout === 'HELD' && !o.dispute) out.push(`<button class="btn btn-success" data-act="confirmOrder" data-id="${o.id}">${icon('check')} Sahkan telah terima</button>`);
-    if (o.status === 'COMPLETED' && !o.review) out.push(`<button class="btn btn-primary" data-act="reviewOrder" data-id="${o.id}">${icon('star')} Beri ulasan</button>`);
+    if (o.status === 'COMPLETED' && !o.review && o.shop.id) out.push(`<button class="btn btn-primary" data-act="reviewOrder" data-id="${o.id}">${icon('star')} Beri ulasan</button>`);
     if (canDispute(o)) out.push(`<button class="btn btn-danger" data-act="disputeModal" data-id="${o.id}">${icon('alert')} Laporkan masalah</button>`);
   }
   if (role === 'seller' && o.dispute?.status === 'OPEN') {
     out.push(`<button class="btn btn-primary" data-act="respondModal" data-id="${o.id}">${icon('edit')} ${o.dispute.seller_response ? 'Kemas kini penjelasan' : 'Beri penjelasan'}</button>`);
   }
   if (role === 'admin' && ACTIVE.includes(o.status)) out.push(b('CANCELLED', 'Batal (admin)', 'btn-danger', 'x'));
-  if (role !== 'admin') out.push(`<button class="btn btn-ghost" data-act="chatOrder" data-id="${o.id}">${icon('chat')} Chat ${role === 'seller' ? 'pembeli' : 'peniaga'}</button>`);
+  if (role !== 'admin') out.push(`<button class="btn btn-ghost" data-act="chatOrder" data-id="${o.id}">${icon('chat')} Chat ${role === 'seller' ? 'pembeli' : o.shop.id ? 'peniaga' : 'penjual'}</button>`);
   return out.join('');
 }
 
@@ -59,12 +70,13 @@ export function orderCard(o, role = 'buyer') {
   return `
     <article class="card order-card" data-act="openOrder" data-id="${o.id}">
       <div class="between">
-        <div class="row"><b>${esc(role === 'seller' ? o.buyer.name : o.shop.name)}</b>${statusBadge(o.status)}</div>
+        <div class="row-wrap"><b>${esc(role === 'seller' ? o.buyer.name : o.shop.name)}</b>${statusBadge(o.status)}</div>
         <span class="xs faint nowrap">${timeAgo(o.created_at)}</span>
       </div>
-      <div class="small muted clamp-1">${o.items.map((i) => `${i.qty}× ${esc(i.title)}`).join(', ')}</div>
+      <div class="small muted clamp-1">${icon(kindOf(o).ic)} ${o.items.map((i) => `${o.kind === 'RENTAL' ? '' : `${i.qty}× `}${esc(i.title)}`).join(', ')}</div>
+      ${isBooking(o) ? `<div class="small bold">${icon('calendar')} ${schedule(o)}${o.pickup ? ` · ${esc(o.pickup)}` : ''}</div>` : ''}
       <div class="between small">
-        <span class="faint">#${esc(o.code)} · ${count} item · ${o.fulfilment === 'DELIVERY' ? 'Hantar' : 'Ambil sendiri'} · ${o.payment === 'WALLET' ? 'Dompet' : 'Tunai'}</span>
+        <span class="faint">#${esc(o.code)} · ${esc(kindOf(o).label)}${o.kind === 'ORDER' ? ` · ${count} item · ${o.fulfilment === 'DELIVERY' ? 'Hantar' : 'Ambil sendiri'}` : ''} · ${o.payment === 'WALLET' ? 'Dompet' : 'Tunai'}</span>
         <span class="price">${rm(o.total)}</span>
       </div>
       ${role === 'seller' && ACTIVE.includes(o.status) ? `<div class="row-wrap" style="padding-top:6px">${orderButtons(o, 'seller')}</div>` : ''}
@@ -118,22 +130,31 @@ page('/orders/:id', async ({ id }) => {
       <section class="card pad stack">
         <h2 class="section-title">Butiran</h2>
         <div class="line-items">
-          ${o.items.map((i) => `<div><span>${i.qty}× ${esc(i.title)}</span><span>${rm(i.price * i.qty)}</span></div>`).join('')}
+          ${o.items.map((i) => `<div><span>${o.kind === 'RENTAL' ? `${esc(i.title)} · ${i.qty} hari × ${rm(i.price)}` : o.kind === 'RIDE' ? `${esc(i.title)} · ${i.qty} orang × ${rm(i.price)}` : `${i.qty}× ${esc(i.title)}`}</span><span>${rm(i.price * i.qty)}</span></div>`).join('')}
           <hr class="sep">
           <div><span class="muted">Jumlah kecil</span><span>${rm(o.subtotal)}</span></div>
-          <div><span class="muted">Caj penghantaran</span><span>${o.delivery_fee ? rm(o.delivery_fee) : 'Percuma'}</span></div>
+          ${o.kind === 'ORDER' ? `<div><span class="muted">Caj penghantaran</span><span>${o.delivery_fee ? rm(o.delivery_fee) : 'Percuma'}</span></div>` : ''}
+          ${o.deposit ? `<div><span class="muted">Deposit (dipulangkan selepas selesai)</span><span>${rm(o.deposit)}</span></div>` : ''}
           ${role !== 'buyer' && o.commission ? `<div><span class="muted">Komisen platform</span><span>−${rm(o.commission)}</span></div>` : ''}
           <div class="total-row"><span>Jumlah</span><span class="price">${rm(o.total)}</span></div>
         </div>
         <dl class="kv">
           <dt>Pembayaran</dt><dd>${o.payment === 'WALLET' ? `${icon('wallet')} Dompet UPSIHub` : `${icon('banknote')} Tunai semasa terima`}</dd>
-          <dt>Penerimaan</dt><dd>${o.fulfilment === 'DELIVERY' ? 'Penghantaran' : 'Ambil sendiri'}</dd>
-          ${o.address ? `<dt>Lokasi</dt><dd>${esc(o.address)}</dd>` : ''}
+          <dt>Jenis</dt><dd>${icon(kindOf(o).ic)} ${esc(kindOf(o).label)}</dd>
+          ${o.kind === 'ORDER' ? `<dt>Penerimaan</dt><dd>${o.fulfilment === 'DELIVERY' ? 'Penghantaran' : 'Ambil sendiri'}</dd>` : ''}
+          ${o.listing ? `<dt>Iklan</dt><dd><a class="btn-link" href="#/listing/${o.listing.id}">${esc(o.listing.title)}</a></dd>` : ''}
+          ${o.kind === 'RENTAL' ? `<dt>Kenderaan</dt><dd>${esc(o.vehicle.model)} · ${esc(o.vehicle.plate)}</dd><dt>Ambil</dt><dd>${fmtDate(o.start_at)}</dd><dt>Pulang</dt><dd>${fmtDate(o.end_at)}</dd>` : ''}
+          ${o.kind === 'RIDE' || o.kind === 'SERVICE' ? `<dt>Tarikh & masa</dt><dd>${fmtDateTime(o.start_at)}${o.end_at ? ` – ${fmtTime(o.end_at)}` : ''}</dd>` : ''}
+          ${o.pax ? `<dt>Penumpang</dt><dd>${o.pax} orang</dd>` : ''}
+          ${o.pickup ? `<dt>${o.kind === 'RENTAL' ? 'Serahan kereta' : 'Lokasi ambil'}</dt><dd>${esc(o.pickup)}</dd>` : ''}
+          ${o.dropoff ? `<dt>Destinasi</dt><dd>${esc(o.dropoff)}</dd>` : ''}
+          ${o.address ? `<dt>${o.kind === 'ITEM' ? 'Tempat berjumpa' : 'Lokasi'}</dt><dd>${esc(o.address)}</dd>` : ''}
+          ${role === 'buyer' && !o.shop.id ? `<dt>${o.kind === 'ROOM' ? 'Tuan rumah' : 'Penjual'}</dt><dd>${esc(o.seller.name)}</dd>` : ''}
           ${o.note ? `<dt>Nota</dt><dd>${esc(o.note)}</dd>` : ''}
           ${role !== 'buyer' ? `<dt>Pembeli</dt><dd>${esc(o.buyer.name)}${o.buyer.matric ? ` · ${esc(o.buyer.matric)}` : ''}</dd>` : ''}
           ${role !== 'buyer' && o.buyer.phone ? `<dt>Telefon</dt><dd>${esc(o.buyer.phone)}</dd>` : ''}
         </dl>
-        ${o.payment === 'WALLET' && ACTIVE.includes(o.status) ? `<div class="alert info small">${icon('shield')}<div>Bayaran ${rm(o.total)} dipegang dengan selamat oleh UPSIHub dan hanya dilepaskan kepada peniaga apabila pesanan selesai.</div></div>` : ''}
+        ${o.payment === 'WALLET' && ACTIVE.includes(o.status) ? `<div class="alert info small">${icon('shield')}<div>Bayaran ${rm(o.total)} dipegang dengan selamat oleh UPSIHub dan hanya dilepaskan kepada ${o.shop.id ? 'peniaga' : 'penjual'} apabila ${isBooking(o) ? 'tempahan' : 'pesanan'} selesai.${o.deposit ? ` Deposit ${rm(o.deposit)} dipulangkan kepada anda selepas itu.` : ''}</div></div>` : ''}
       </section>
 
       ${o.dispute ? disputeCard(o, role) : ''}
@@ -206,7 +227,7 @@ function heldNotice(o, role) {
   if (role === 'buyer') {
     return `<div class="alert warn small">${icon('clock')}<div><b>Peniaga telah menandakan pesanan ini selesai.</b> Bayaran ${rm(o.total)} akan dilepaskan kepada peniaga pada <b>${when}</b> (${hoursLeft(o.release_at)} jam lagi). Jika anda belum menerima pesanan atau ada masalah, tekan <b>Laporkan masalah</b> sebelum itu – bayaran akan dibekukan sehingga admin membuat keputusan.</div></div>`;
   }
-  return `<div class="alert info small">${icon('clock')}<div>Bayaran ${rm(o.total - o.commission)} akan dikreditkan ke dompet ${role === 'seller' ? 'anda' : 'peniaga'} pada <b>${when}</b>, atau lebih awal jika pembeli mengesahkan penerimaan.</div></div>`;
+  return `<div class="alert info small">${icon('clock')}<div>Bayaran ${rm(o.total - o.deposit - o.commission)} akan dikreditkan ke dompet ${role === 'seller' ? 'anda' : 'peniaga'} pada <b>${when}</b>, atau lebih awal jika pembeli mengesahkan penerimaan.</div></div>`;
 }
 
 function disputeCard(o, role) {

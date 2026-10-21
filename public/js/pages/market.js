@@ -1,40 +1,104 @@
 import {
   state, api, esc, rm, icon, page, actions, forms, changes, inputs, cover, thumb, stars, avatar, campusName, emptyState,
-  saveCart, cartCount, cartTotal, openModal, closeOverlay, toast, confirmDialog, timeAgo, CAT_EMOJI, hooks
+  saveCart, cartCount, cartTotal, openModal, closeOverlay, toast, confirmDialog, timeAgo, catEmoji, hooks
 } from '../core.js';
+import { shopCard, listingCard } from './cards.js';
+import { remember } from './booking.js';
 
 const filters = { q: '', campus: 'ALL', category: 'ALL', sort: 'popular' };
 let searchTimer = null;
 
 // =====================================================================
-// HOME / MARKETPLACE
+// HOME HUB – entry point to every module
 // =====================================================================
+const MODULES = [
+  { href: '#/shops', emoji: '🍱', title: 'Makanan & Kedai', sub: 'Pesan dari peniaga kampus', count: (c) => c.shops },
+  { href: '#/transport', emoji: '🚗', title: 'Prebet & Trip', sub: 'Tempah trip ikut masa', count: (c) => c.rides },
+  { href: '#/transport?tab=rent', emoji: '🔑', title: 'Sewa Kereta', sub: 'Harian, dengan deposit', count: (c) => c.vehicles },
+  { href: '#/services', emoji: '🎓', title: 'Servis & Tutor', sub: 'Tempah slot masa', count: (c) => c.services },
+  { href: '#/market', emoji: '📦', title: 'Barang Terpakai', sub: 'Jual beli antara pelajar', count: (c) => c.ITEM },
+  { href: '#/rooms', emoji: '🏠', title: 'Sewa Bilik', sub: 'Rumah sewa dekat kampus', count: (c) => c.ROOM },
+  { href: '#/jobs', emoji: '💼', title: 'Kerja Part-time', sub: 'Tambah duit poket', count: (c) => c.JOB },
+  { href: '#/events', emoji: '🎟️', title: 'Event & Tiket', sub: 'Program & tiket kampus', count: (c) => c.EVENT },
+  { href: '#/lost', emoji: '🔎', title: 'Hilang & Jumpa', sub: 'Bantu cari barang', count: (c) => c.LOST }
+];
+
 page('/', async () => {
   const c = state.config;
-  c.stats = (await api('GET', '/api/config')).stats;
-  const hello = state.me ? `Hai ${esc(state.me.name.split(' ')[0])} 👋 ` : '';
-  const html = `
+  const [hub, cfg, top] = await Promise.all([api('GET', '/api/hub'), api('GET', '/api/config'), api('GET', '/api/shops?sort=popular')]);
+  c.stats = cfg.stats;
+  const hello = state.me ? `Hai ${esc(state.me.name.split(' ')[0])} 👋` : 'Selamat datang ke UPSIHub 👋';
+  const strip = (title, href, items, render) => items.length ? `
+    <section class="stack-sm">
+      <div class="between"><h2 class="section-title">${title}</h2><a class="btn btn-link small" href="${href}">Lihat semua ${icon('right')}</a></div>
+      <div class="hscroll">${items.map(render).join('')}</div>
+    </section>` : '';
+  return `
     <div class="stack-lg">
-      <section class="hero">
-        <span class="tag">${icon('sparkles')} Platform Rasmi Komuniti UPSI</span>
-        <h1>${hello}Makanan, prebet & servis runner kampus – pesan & bayar terus di sini.</h1>
-        <p>Tiada WhatsApp, tiada gateway luar. Pesan, bayar dengan Dompet UPSIHub, dan chat terus dengan peniaga dalam satu aplikasi.</p>
-        <div class="hero-feats">
-          <span>${icon('shield')} Peniaga disahkan admin</span>
-          <span>${icon('wallet')} Bayaran dompet dalaman</span>
-          <span>${icon('chat')} Chat masa nyata</span>
-          <span>${icon('truck')} Jejak status pesanan</span>
-        </div>
+      <section class="hero hero-compact">
+        <span class="tag">${icon('sparkles')} One-stop centre pelajar UPSI</span>
+        <h1>${hello}<br>Apa yang anda perlukan hari ini?</h1>
+        <form data-form="globalSearch" class="hero-search">
+          <div class="input-icon grow">${icon('search')}<input class="input" name="q" type="search" placeholder="Cari makanan, buku, bilik sewa, prebet, tutor…" aria-label="Cari semua"></div>
+          <button class="btn btn-success" type="submit">Cari</button>
+        </form>
         <div class="hero-stats">
-          <div><b>${c.stats.shops}</b><span>Peniaga aktif</span></div>
+          <div><b>${c.stats.shops}</b><span>Peniaga</span></div>
+          <div><b>${hub.counts.ITEM + hub.counts.ROOM + hub.counts.JOB + hub.counts.EVENT}</b><span>Iklan aktif</span></div>
           <div><b>${c.stats.users}</b><span>Pengguna</span></div>
-          <div><b>${c.stats.orders}</b><span>Pesanan selesai</span></div>
         </div>
       </section>
 
+      <section class="tiles">
+        ${MODULES.map((m) => `
+          <a class="card tile" href="${m.href}">
+            <span class="tile-emoji">${m.emoji}</span>
+            <b>${m.title}</b>
+            <span class="xs muted">${m.sub}</span>
+            <span class="badge blue">${m.count(hub.counts)}</span>
+          </a>`).join('')}
+        <a class="card tile tile-cta" href="#/post"><span class="tile-emoji">➕</span><b>Pasang Iklan</b><span class="xs">Percuma untuk semua pelajar</span></a>
+      </section>
+
+      ${strip('📦 Barang terpakai terkini', '#/market', hub.latest, listingCard)}
+      ${strip('🍱 Kedai popular', '#/shops', top.shops.slice(0, 8), shopCard)}
+      ${strip('🎟️ Event akan datang', '#/events', hub.events, listingCard)}
+      ${strip('🏠 Bilik sewa terkini', '#/rooms', hub.rooms, listingCard)}
+    </div>`;
+});
+
+forms.globalSearch = (data) => { location.hash = `#/search?q=${encodeURIComponent(data.q.trim())}`; };
+
+page('/search', async (_, query) => {
+  const q = (query.get('q') || '').trim();
+  const kinds = ['ITEM', 'ROOM', 'JOB', 'EVENT', 'LOST'];
+  const [shops, ...lists] = await Promise.all([
+    api('GET', `/api/shops?q=${encodeURIComponent(q)}`),
+    ...kinds.map((k) => api('GET', `/api/listings?kind=${k}&q=${encodeURIComponent(q)}`))
+  ]);
+  const groups = kinds.map((k, i) => [k, lists[i].listings]).filter(([, l]) => l.length);
+  const total = shops.shops.length + groups.reduce((n, [, l]) => n + l.length, 0);
+  return `
+    <div class="stack-lg">
+      <div class="page-head"><div><h1>Carian: "${esc(q)}"</h1><p>${total} hasil ditemui di semua modul.</p></div></div>
+      <form data-form="globalSearch" class="row"><div class="input-icon grow">${icon('search')}<input class="input" name="q" type="search" value="${esc(q)}"></div><button class="btn btn-primary" type="submit">Cari</button></form>
+      ${shops.shops.length ? `<section class="stack-sm"><h2 class="section-title">Kedai & Servis (${shops.shops.length})</h2><div class="grid-3">${shops.shops.map(shopCard).join('')}</div></section>` : ''}
+      ${groups.map(([k, l]) => `<section class="stack-sm"><h2 class="section-title">${esc(state.config.listing_kinds[k])} (${l.length})</h2><div class="grid-4">${l.map(listingCard).join('')}</div></section>`).join('')}
+      ${total ? '' : `<div class="card">${emptyState('search', 'Tiada hasil', 'Cuba kata kunci lain, atau pasang iklan "Dicari" di Barang Terpakai.')}</div>`}
+    </div>`;
+});
+
+// =====================================================================
+// SHOPS LIST
+// =====================================================================
+page('/shops', () => {
+  const c = state.config;
+  return { after: loadShops, html: `
+    <div class="stack">
+      <div class="page-head"><div><h1>Makanan & Kedai</h1><p>Peniaga kampus yang disahkan admin – pesan, tempah & bayar dalam aplikasi.</p></div></div>
       <section class="card filters">
         <div class="filters-row">
-          <div class="input-icon grow">${icon('search')}<input class="input" type="search" placeholder="Cari kedai, makanan (cth: nasi lemak), print, prebet…" value="${esc(filters.q)}" data-input="searchShops" aria-label="Cari"></div>
+          <div class="input-icon grow">${icon('search')}<input class="input" type="search" placeholder="Cari kedai, makanan (cth: nasi lemak), print, tutor…" value="${esc(filters.q)}" data-input="searchShops" aria-label="Cari"></div>
           <select class="input sel" data-change="filterCampus" aria-label="Kampus">
             <option value="ALL">Semua kampus & kawasan</option>
             ${Object.entries(c.campuses).map(([k, v]) => `<option value="${k}" ${filters.campus === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}
@@ -45,13 +109,11 @@ page('/', async () => {
         </div>
         <div class="chips" role="tablist">
           <button class="chip ${filters.category === 'ALL' ? 'active' : ''}" data-act="filterCategory" data-cat="ALL">Semua</button>
-          ${c.categories.map((cat) => `<button class="chip ${filters.category === cat ? 'active' : ''}" data-act="filterCategory" data-cat="${esc(cat)}">${CAT_EMOJI[cat] || ''} ${esc(cat)}</button>`).join('')}
+          ${c.categories.map((cat) => `<button class="chip ${filters.category === cat ? 'active' : ''}" data-act="filterCategory" data-cat="${esc(cat)}">${catEmoji(cat)} ${esc(cat)}</button>`).join('')}
         </div>
       </section>
-
       <section id="shopGrid" class="grid-3"></section>
-    </div>`;
-  return { html, after: loadShops };
+    </div>` };
 });
 
 async function loadShops() {
@@ -69,29 +131,9 @@ async function loadShops() {
   grid.innerHTML = shops.map(shopCard).join('');
 }
 
-function shopCard(s) {
-  return `
-    <article class="card shop-card" data-act="openShop" data-id="${s.id}" tabindex="0">
-      <div class="cover">
-        ${cover(s)}
-        <span class="badge b-left"><span class="bullet" style="color:${s.is_open ? '#34d399' : '#fb7185'}"></span>${s.is_open ? 'Buka' : 'Tutup'}</span>
-        <span class="badge b-right">${esc(s.campus)}</span>
-      </div>
-      <div class="body">
-        <div class="eyebrow">${esc(s.category)}</div>
-        <h3 class="clamp-1">${esc(s.name)}</h3>
-        <p class="small muted clamp-2">${esc(s.description)}</p>
-        <div class="shop-meta">
-          <span>${icon('star', 'star')} ${s.reviews ? `<b>${s.rating.toFixed(1)}</b> (${s.reviews})` : 'Baharu'}</span>
-          <span>${icon('package')} ${s.item_count} item${s.from_price != null ? ` · dari ${rm(s.from_price)}` : ''}</span>
-          <span>${icon('truck')} ${s.delivery_fee ? rm(s.delivery_fee) : 'Percuma'}</span>
-        </div>
-      </div>
-    </article>`;
-}
-
 Object.assign(actions, {
   openShop: (el) => { location.hash = `#/shop/${el.dataset.id}`; },
+  openListing: (el) => { location.hash = `#/listing/${el.dataset.id}`; },
   filterCategory(el) {
     filters.category = el.dataset.cat;
     document.querySelectorAll('[data-act="filterCategory"]').forEach((b) => b.classList.toggle('active', b === el));
@@ -111,12 +153,18 @@ inputs.searchShops = (el) => {
 // SHOP DETAIL
 // =====================================================================
 page('/shop/:id', async ({ id }) => {
-  const { shop, items, reviews } = await api('GET', `/api/shops/${id}`);
+  const { shop, items, reviews, vehicles } = await api('GET', `/api/shops/${id}`);
+  remember({ ...shop }, items, vehicles);
+  const groups = [
+    ['PRODUCT', 'Menu & Produk', 'Tambah ke troli dan bayar sekali gus.'],
+    ['ROUTE', 'Trip Prebet', 'Pilih laluan, kemudian tetapkan masa & lokasi ambil.'],
+    ['SERVICE', 'Servis Bertempah', 'Pilih tarikh & slot masa yang kosong.']
+  ].map(([kind, title, hint]) => [kind, title, hint, items.filter((it) => (it.kind || 'PRODUCT') === kind)]).filter((g) => g[3].length);
   const inCart = state.cart.shopId === shop.id ? state.cart.items : {};
   const mine = state.me?.id === shop.owner_id;
   const html = `
     <div class="stack-lg">
-      <a href="#/" class="btn btn-link small" style="align-self:flex-start">${icon('back')} Kembali ke Pasar</a>
+      <a href="#/shops" class="btn btn-link small" style="align-self:flex-start">${icon('back')} Semua kedai</a>
       ${shop.status !== 'APPROVED' ? `<div class="alert warn">${icon('info')}<div>Pratonton – kedai ini belum dipaparkan kepada pelajar (status: ${esc(shop.status)}).</div></div>` : ''}
       <section class="card shop-hero">
         <div class="cover">${cover(shop)}
@@ -149,11 +197,18 @@ page('/shop/:id', async ({ id }) => {
 
       <div class="grid" style="grid-template-columns:minmax(0,1fr)">
         <section class="stack">
-          <h2 class="section-title">Menu & Perkhidmatan</h2>
-          ${!shop.is_open ? `<div class="alert warn">${icon('clock')}<div>Kedai sedang tutup. Anda boleh melihat menu tetapi pesanan hanya boleh dibuat semasa kedai dibuka.</div></div>` : ''}
-          <div class="stack-sm">
-            ${items.length ? items.map((it) => menuRow(it, shop, inCart[it.id]?.qty || 0, mine)).join('') : `<div class="card">${emptyState('package', 'Tiada menu lagi', 'Peniaga belum menambah sebarang item.')}</div>`}
-          </div>
+          ${!shop.is_open && groups.some((g) => g[0] === 'PRODUCT') ? `<div class="alert warn">${icon('clock')}<div>Kedai sedang tutup. Pesanan troli hanya boleh dibuat semasa kedai dibuka, tetapi tempahan untuk masa hadapan masih boleh dibuat.</div></div>` : ''}
+          ${groups.map(([kind, title, hint, list]) => `
+            <div class="stack-sm">
+              <div><h2 class="section-title">${title}</h2><p class="xs faint">${hint}</p></div>
+              ${list.map((it) => menuRow(it, shop, inCart[it.id]?.qty || 0, mine)).join('')}
+            </div>`).join('')}
+          ${vehicles.length ? `
+            <div class="stack-sm">
+              <div><h2 class="section-title">Kereta untuk Disewa</h2><p class="xs faint">Sewa harian dengan deposit yang dipulangkan.</p></div>
+              <div class="grid-2">${vehicles.map((v) => vehicleCard({ ...v, shop_name: shop.name }, mine)).join('')}</div>
+            </div>` : ''}
+          ${!items.length && !vehicles.length ? `<div class="card">${emptyState('package', 'Tiada menu lagi', 'Peniaga belum menambah sebarang item.')}</div>` : ''}
         </section>
 
         <section class="card">
@@ -174,7 +229,33 @@ page('/shop/:id', async ({ id }) => {
 
 let currentShop = null;
 
+export function vehicleCard(v, mine = false) {
+  return `
+    <div class="card vehicle-card">
+      <div class="cover" style="height:140px">${v.image ? `<img src="${esc(v.image)}" alt="" loading="lazy">` : '<div class="cover-art c1">🚗</div>'}<span class="badge b-right">${v.seats} tempat duduk</span></div>
+      <div class="body stack-sm" style="padding:14px">
+        <div class="between"><b>${esc(v.model)}</b><span class="price">${rm(v.daily_rate)}<span class="xs faint">/hari</span></span></div>
+        <div class="xs muted">${v.transmission === 'AUTO' ? 'Auto' : 'Manual'} · Deposit ${rm(v.deposit)}${v.shop_name ? ` · ${esc(v.shop_name)}` : ''}</div>
+        ${mine ? '' : `<button class="btn btn-primary btn-sm" data-act="bookRental" data-vehicle="${v.id}">${icon('key')} Sewa kereta ini</button>`}
+      </div>
+    </div>`;
+}
+
 function menuRow(it, shop, qty, mine) {
+  const kind = it.kind || 'PRODUCT';
+  if (kind !== 'PRODUCT') {
+    const can = !mine && it.available && shop.status === 'APPROVED';
+    return `
+      <div class="menu-item ${it.available ? '' : 'off'}">
+        ${thumb(it)}
+        <div class="grow">
+          <div class="bold">${esc(it.title)}</div>
+          ${it.description ? `<div class="small muted clamp-2">${esc(it.description)}</div>` : ''}
+          <div class="price" style="margin-top:4px">${rm(it.price)} <span class="xs faint">${kind === 'ROUTE' ? 'seorang' : `· ${it.duration_min} min`}</span></div>
+        </div>
+        ${can ? `<button class="btn btn-primary btn-sm" data-act="${kind === 'ROUTE' ? 'bookRide' : 'bookService'}" data-item="${it.id}">${icon('calendar')} Tempah</button>` : ''}
+      </div>`;
+  }
   const canOrder = !mine && shop.is_open && it.available && shop.status === 'APPROVED';
   return `
     <div class="menu-item ${it.available ? '' : 'off'}">

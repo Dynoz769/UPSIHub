@@ -3,6 +3,8 @@ import {
   clearPageListeners, closeOverlay, overlayOpen, setBusy, uploadImage, skeletonView, cartCount, emptyState, hooks
 } from './core.js';
 import './pages/market.js';
+import './pages/explore.js';
+import './pages/listings.js';
 import './pages/account.js';
 import './pages/orders.js';
 import './pages/wallet.js';
@@ -17,7 +19,7 @@ const view = document.getElementById('view');
 // =====================================================================
 function navItems() {
   const items = [
-    { href: '#/', ic: 'store', label: 'Pasar', match: /^\/(shop.*)?$/ },
+    { href: '#/', ic: 'home', label: 'Utama', match: /^\/(shops?(\/.*)?|search|market|rooms|jobs|events|lost|transport|services|listing\/.*|post|my)?$/ },
     { href: '#/orders', ic: 'receipt', label: 'Pesanan', match: /^\/orders/ },
     { href: '#/chat', ic: 'chat', label: 'Chat', match: /^\/chat/, badge: state.unread.chat },
     { href: '#/wallet', ic: 'wallet', label: 'Dompet', match: /^\/wallet/ },
@@ -40,6 +42,7 @@ function renderShell() {
   const n = cartCount();
   document.getElementById('topActions').innerHTML = `
     <button class="icon-btn hide-sm" data-act="toggleTheme" aria-label="Tukar tema">${icon(dark ? 'sun' : 'moon')}</button>
+    <a class="btn btn-ghost hide-sm" href="#/post">${icon('plus')} Iklan</a>
     <button class="icon-btn" data-act="openCart" aria-label="Troli">${icon('bag')}<span class="dot" data-n="${n}">${n}</span></button>
     ${state.me ? `
       <button class="icon-btn" data-act="openNotifications" aria-label="Notifikasi">${icon('bell')}<span class="dot" data-n="${state.unread.notifications}">${state.unread.notifications > 99 ? '99+' : state.unread.notifications}</span></button>
@@ -201,7 +204,8 @@ Object.assign(actions, {
       <div class="card-head" style="justify-content:flex-start">${avatar(state.me)}<div class="grow"><div class="bold clamp-1">${esc(state.me.name)}</div><div class="xs faint clamp-1">${esc(state.me.email)}</div></div></div>
       <a href="#/profile">${icon('user')} Profil & Tetapan</a>
       <a href="#/wallet">${icon('wallet')} Dompet <span class="grow"></span><b data-balance>${rm(state.me.balance)}</b></a>
-      <a href="#/orders">${icon('receipt')} Pesanan Saya</a>
+      <a href="#/orders">${icon('receipt')} Pesanan & Tempahan</a>
+      <a href="#/my">${icon('tag')} Iklan Saya</a>
       <a href="#/seller">${icon('grid')} Pusat Peniaga</a>
       <button data-act="toggleTheme">${icon('moon')} Tukar tema gelap / cerah</button>
       ${state.me.role === 'admin' ? `<a href="#/admin">${icon('shield')} Panel Admin</a>` : `<button data-act="openSupport">${icon('headset')} Hubungi Sokongan</button>`}

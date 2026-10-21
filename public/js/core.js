@@ -19,6 +19,7 @@ export const senToInput = (sen) => (Number(sen || 0) / 100).toFixed(2);
 export const fmtDate = (ms, opts = { day: 'numeric', month: 'short', year: 'numeric' }) => new Date(ms).toLocaleDateString('ms-MY', opts);
 export const fmtTime = (ms) => new Date(ms).toLocaleTimeString('ms-MY', { hour: '2-digit', minute: '2-digit' });
 export const fmtDateTime = (ms) => `${fmtDate(ms)}, ${fmtTime(ms)}`;
+export const fmtDay = (ms) => new Date(ms).toLocaleDateString('ms-MY', { weekday: 'short', day: 'numeric', month: 'short' });
 export function timeAgo(ms) {
   const s = Math.round((Date.now() - ms) / 1000);
   if (s < 60) return 'baru sahaja';
@@ -37,12 +38,33 @@ export function stars(n, max = 5) {
   for (let i = 1; i <= max; i++) out += icon('star', i <= Math.round(n) ? '' : 'off');
   return out + '</span>';
 }
-export const CAT_EMOJI = { 'Makanan & Minuman': '🍱', 'Prebet & Transport': '🚗', 'Servis Runner': '⚡', 'Servis Lain': '🛠️' };
+export const catEmoji = (name) => state.config?.category_emoji?.[name] || '🏪';
+const hashIdx = (s, n = 4) => [...String(s || '')].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % n;
 export function cover(shop) {
   if (shop.image) return `<img src="${esc(shop.image)}" alt="" loading="lazy">`;
-  const i = Math.max(0, (state.config?.categories || []).indexOf(shop.category)) % 4;
-  return `<div class="cover-art c${i}">${CAT_EMOJI[shop.category] || '🏪'}</div>`;
+  return `<div class="cover-art c${hashIdx(shop.category)}">${catEmoji(shop.category)}</div>`;
 }
+export const LISTING_EMOJI = { ITEM: '📦', ROOM: '🏠', JOB: '💼', EVENT: '🎟️', LOST: '🔎' };
+export function listingCover(l) {
+  if (l.images?.[0]) return `<img src="${esc(l.images[0])}" alt="" loading="lazy">`;
+  const emoji = l.kind === 'ITEM' ? catEmoji(l.category) : LISTING_EMOJI[l.kind];
+  return `<div class="cover-art c${hashIdx(l.category || l.kind)}">${emoji}</div>`;
+}
+
+// How each order kind is described to buyers and sellers.
+export const ORDER_KINDS = {
+  ORDER: { label: 'Pesanan kedai', ic: 'bag', steps: ['Dipesan', 'Disediakan', 'Sedia', 'Selesai'], ready: 'Sedia diambil', done: 'Tandakan selesai' },
+  RIDE: { label: 'Trip prebet', ic: 'car', steps: ['Ditempah', 'Disahkan', 'Dalam perjalanan', 'Selesai'], ready: 'Mula perjalanan', done: 'Trip selesai' },
+  SERVICE: { label: 'Tempahan servis', ic: 'calendar', steps: ['Ditempah', 'Disahkan', 'Sedang berjalan', 'Selesai'], ready: 'Mula sesi', done: 'Sesi selesai' },
+  RENTAL: { label: 'Sewa kereta', ic: 'key', steps: ['Ditempah', 'Disahkan', 'Kereta diserahkan', 'Dipulangkan'], ready: 'Serah kereta', done: 'Kereta dipulangkan' },
+  ITEM: { label: 'Barang terpakai', ic: 'package', steps: ['Dibeli', 'Disahkan', 'Diserahkan', 'Selesai'], ready: 'Barang diserahkan', done: 'Tandakan selesai' },
+  TICKET: { label: 'Tiket event', ic: 'ticket', steps: ['Dibeli', 'Disahkan', 'Tiket dikeluarkan', 'Selesai'], ready: 'Keluarkan tiket', done: 'Tandakan selesai' },
+  ROOM: { label: 'Deposit bilik', ic: 'home', steps: ['Deposit dibayar', 'Diterima', 'Kunci diserahkan', 'Selesai'], ready: 'Serah kunci', done: 'Penyewa sudah masuk' }
+};
+export const isBooking = (o) => ['RIDE', 'SERVICE', 'RENTAL'].includes(o.kind);
+// Local calendar date as YYYY-MM-DD.
+export const ymd = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export const addDays = (s, n) => { const d = new Date(`${s}T00:00`); d.setDate(d.getDate() + n); return ymd(d); };
 export function thumb(item, cls = '') {
   return `<div class="thumb ${cls}">${item.image ? `<img src="${esc(item.image)}" alt="" loading="lazy">` : initials(item.title)}</div>`;
 }
@@ -97,7 +119,7 @@ export function toast(message, type = 'info', { title, link, timeout = 4000 } = 
   el.innerHTML = `${icon(type === 'success' ? 'checkCircle' : type === 'error' ? 'alert' : 'bell')}<div>${title ? `<b>${esc(title)}</b>` : ''}${esc(message)}</div>`;
   el.addEventListener('click', () => { if (link) location.hash = link; el.remove(); });
   root.appendChild(el);
-  while (root.children.length > 3) root.firstChild.remove();
+  while (root.children.length > 2) root.firstChild.remove();
   setTimeout(() => el.remove(), timeout);
 }
 
@@ -187,7 +209,8 @@ export function statusBadge(status) {
     PENDING: ['amber', 'Menunggu'], ACCEPTED: ['blue', 'Disediakan'], READY: ['blue', 'Sedia'], COMPLETED: ['green', 'Selesai'],
     CANCELLED: ['red', 'Dibatalkan'], REJECTED: ['red', 'Ditolak'], APPROVED: ['green', 'Lulus'], SUSPENDED: ['red', 'Digantung'],
     PAID: ['green', 'Dibayar'], active: ['green', 'Aktif'], suspended: ['red', 'Digantung'],
-    DISPUTED: ['amber', 'Dilaporkan'], OPEN: ['amber', 'Dalam semakan'], RESOLVED: ['green', 'Selesai']
+    DISPUTED: ['amber', 'Dilaporkan'], OPEN: ['amber', 'Dalam semakan'], RESOLVED: ['green', 'Selesai'],
+    ACTIVE: ['green', 'Aktif'], RESERVED: ['amber', 'Ditempah'], SOLD: ['red', 'Terjual'], CLOSED: ['', 'Ditutup'], REMOVED: ['red', 'Dipadam admin']
   };
   const [c, l] = map[status] || ['', status];
   return `<span class="badge ${c}"><span class="bullet"></span>${esc(l)}</span>`;

@@ -7,7 +7,8 @@ import { orderCard } from './orders.js';
 const TABS = [
   ['overview', 'Ringkasan', 'grid'],
   ['orders', 'Pesanan', 'receipt'],
-  ['menu', 'Menu', 'list'],
+  ['menu', 'Menu & servis', 'list'],
+  ['vehicles', 'Kenderaan', 'car'],
   ['shop', 'Profil kedai', 'store'],
   ['license', 'Lesen', 'shield']
 ];
@@ -34,6 +35,7 @@ async function sellerPage(tab, query) {
     overview: () => overview(data),
     orders: () => ordersTab(query),
     menu: () => menuTab(data.items),
+    vehicles: () => vehiclesTab(data.vehicles),
     shop: () => shopTab(s),
     license: () => licenseTab(s)
   }[tab] || (() => overview(data));
@@ -120,10 +122,11 @@ function menuTab(items) {
     <section class="card">
       <div class="card-head"><div><h2 class="section-title">Menu / Perkhidmatan</h2><p class="xs faint">${items.length} item · pelajar melihat senarai ini di halaman kedai anda</p></div>
         <button class="btn btn-primary" data-act="itemModal">${icon('plus')} Tambah item</button></div>
-      ${items.length ? `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Item</th><th>Harga</th><th>Tersedia</th><th class="right">Tindakan</th></tr></thead><tbody>
+      ${items.length ? `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Item</th><th>Jenis</th><th>Harga</th><th>Tersedia</th><th class="right">Tindakan</th></tr></thead><tbody>
         ${items.map((it) => `<tr>
           <td style="width:60px">${thumb(it, 'sm')}</td>
           <td><div class="bold">${esc(it.title)}</div><div class="xs muted clamp-1">${esc(it.description || '')}</div></td>
+          <td><span class="badge ${it.kind === 'PRODUCT' ? '' : 'blue'}">${ITEM_KINDS[it.kind] || 'Produk'}${it.kind === 'SERVICE' ? ` · ${it.duration_min} min` : ''}</span></td>
           <td class="price">${rm(it.price)}</td>
           <td><label class="switch"><input type="checkbox" ${it.available ? 'checked' : ''} data-change="toggleItem" data-id="${it.id}"><span></span></label></td>
           <td class="right nowrap">
@@ -135,8 +138,12 @@ function menuTab(items) {
 }
 
 // ---------------------------------------------------------------------
-function shopFormFields(s = {}) {
+const ITEM_KINDS = { PRODUCT: 'Produk (troli)', ROUTE: 'Trip prebet', SERVICE: 'Servis bertempah' };
+const DAYS = ['Ahd', 'Isn', 'Sel', 'Rab', 'Kha', 'Jum', 'Sab'];
+
+function shopFormFields(s = {}, withHours = false) {
   const c = state.config;
+  const h = s.booking_hours || { days: [], start: '09:00', end: '18:00' };
   return `
     <div class="field"><label>Nama kedai / perkhidmatan *</label><input class="input" name="name" required minlength="3" maxlength="80" value="${esc(s.name || '')}" placeholder="Cth: Nasi Lemak Royale KSAB / Prebet Abang Farhan"></div>
     <div class="grid-2">
@@ -150,17 +157,34 @@ function shopFormFields(s = {}) {
       <div class="field"><label>Pesanan minimum (RM)</label><div class="input-prefix"><span>RM</span><input class="input" name="min_order" type="number" min="0" max="1000" step="0.10" value="${senToInput(s.min_order || 0)}"></div></div>
     </div>
     <label class="check"><input type="checkbox" name="allow_cash" ${s.allow_cash === false ? '' : 'checked'}> Terima bayaran tunai semasa terima (selain Dompet UPSIHub)</label>
-    ${imageField('image', s.image, 'Gambar / logo kedai', 'Gambar mendatar (landskap) paling cantik di kad kedai.')}`;
+    ${imageField('image', s.image, 'Gambar / logo kedai', 'Gambar mendatar (landskap) paling cantik di kad kedai.')}
+    ${withHours ? `
+      <fieldset class="fieldset stack-sm">
+        <legend>Waktu tempahan servis</legend>
+        <p class="xs faint">Hanya untuk item jenis <b>Servis bertempah</b>. Pelanggan boleh memilih slot dalam waktu ini (setiap 30 minit). Kosongkan semua hari untuk mematikan tempahan.</p>
+        <div class="row-wrap">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<label class="chip check-chip"><input type="checkbox" name="day_${d}" ${h.days.includes(d) ? 'checked' : ''}> ${DAYS[d]}</label>`).join('')}</div>
+        <div class="grid-2">
+          <div class="field"><label>Mula</label><input class="input" type="time" name="bh_start" value="${esc(h.start)}" step="1800"></div>
+          <div class="field"><label>Tamat</label><input class="input" type="time" name="bh_end" value="${esc(h.end)}" step="1800"></div>
+        </div>
+      </fieldset>` : ''}`;
 }
-const shopPayload = (d) => ({
-  name: d.name, category: d.category, campus: d.campus, description: d.description, hours: d.hours,
-  delivery_fee: toSen(d.delivery_fee || 0), min_order: toSen(d.min_order || 0), allow_cash: d.allow_cash === 'on', image: d.image || null
-});
+const shopPayload = (d) => {
+  const out = {
+    name: d.name, category: d.category, campus: d.campus, description: d.description, hours: d.hours,
+    delivery_fee: toSen(d.delivery_fee || 0), min_order: toSen(d.min_order || 0), allow_cash: d.allow_cash === 'on', image: d.image || null
+  };
+  if (d.bh_start !== undefined) {
+    const days = [0, 1, 2, 3, 4, 5, 6].filter((n) => d[`day_${n}`] === 'on');
+    out.booking_hours = days.length ? { days, start: d.bh_start, end: d.bh_end } : null;
+  }
+  return out;
+};
 
 function shopTab(s) {
   return `
     <form data-form="saveShop" class="card pad stack narrow" style="margin:0">
-      ${shopFormFields(s)}
+      ${shopFormFields(s, true)}
       <div><button class="btn btn-primary" type="submit">${icon('check')} Simpan perubahan</button></div>
     </form>`;
 }
@@ -276,8 +300,12 @@ Object.assign(actions, {
       title: it ? 'Sunting item' : 'Tambah item / servis',
       body: `
         <form id="itemForm" data-form="saveItem" data-id="${it?.id || ''}" class="stack">
-          <div class="field"><label>Nama item / servis *</label><input class="input" name="title" required minlength="2" maxlength="100" value="${esc(it?.title || '')}" placeholder="Cth: Nasi Lemak Ayam Goreng / Print A4 Warna"></div>
-          <div class="field"><label>Harga (RM) *</label><div class="input-prefix"><span>RM</span><input class="input" name="price" type="number" min="0.01" step="0.01" required value="${it ? senToInput(it.price) : ''}" placeholder="6.00"></div></div>
+          <div class="field"><label>Jenis *</label>
+            <select class="input" name="kind" data-change="itemKind">${Object.entries(ITEM_KINDS).map(([k, v]) => `<option value="${k}" ${(it?.kind || 'PRODUCT') === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+            <span class="hint" id="kindHint">${KIND_HINT[it?.kind || 'PRODUCT']}</span></div>
+          <div class="field"><label>Nama item / servis *</label><input class="input" name="title" required minlength="2" maxlength="100" value="${esc(it?.title || '')}" placeholder="Cth: Nasi Lemak Ayam Goreng / KSAB → KTM / Tuisyen Kalkulus 1 jam"></div>
+          <div class="field ${it?.kind === 'SERVICE' ? '' : 'hidden'}" id="durField"><label>Tempoh setiap sesi (minit) *</label><input class="input" name="duration_min" type="number" min="15" max="480" step="15" value="${it?.duration_min || 60}"></div>
+          <div class="field"><label id="priceLabel">${it?.kind === 'ROUTE' ? 'Harga seorang (RM) *' : 'Harga (RM) *'}</label><div class="input-prefix"><span>RM</span><input class="input" name="price" type="number" min="0.01" step="0.01" required value="${it ? senToInput(it.price) : ''}" placeholder="6.00"></div></div>
           <div class="field"><label>Penerangan ringkas</label><input class="input" name="description" maxlength="300" value="${esc(it?.description || '')}" placeholder="Cth: Termasuk sambal lebih & telur rebus"></div>
           ${imageField('image', it?.image, 'Gambar item')}
           <label class="check"><input type="checkbox" name="available" ${!it || it.available ? 'checked' : ''}> Tersedia untuk dipesan</label>
@@ -321,7 +349,7 @@ Object.assign(forms, {
     refresh();
   },
   async saveItem(data, form) {
-    const payload = { title: data.title, price: toSen(data.price), description: data.description, image: data.image || null, available: data.available === 'on' };
+    const payload = { title: data.title, price: toSen(data.price), description: data.description, image: data.image || null, available: data.available === 'on', kind: data.kind, duration_min: Number(data.duration_min) };
     const id = form.dataset.id;
     await api(id ? 'PATCH' : 'POST', id ? `/api/seller/items/${id}` : '/api/seller/items', payload);
     closeOverlay();
@@ -337,3 +365,78 @@ Object.assign(forms, {
     refresh();
   }
 });
+
+const KIND_HINT = {
+  PRODUCT: 'Pelanggan tambah ke troli & bayar sekali gus (makanan, barang, print).',
+  ROUTE: 'Pelanggan tempah trip dengan tarikh/masa, lokasi ambil & bilangan penumpang. Harga dikira seorang.',
+  SERVICE: 'Pelanggan pilih slot masa yang kosong. Tetapkan waktu tempahan di tab Profil kedai.'
+};
+changes.itemKind = (el) => {
+  document.getElementById('kindHint').textContent = KIND_HINT[el.value];
+  document.getElementById('durField').classList.toggle('hidden', el.value !== 'SERVICE');
+  document.getElementById('priceLabel').textContent = el.value === 'ROUTE' ? 'Harga seorang (RM) *' : 'Harga (RM) *';
+};
+
+// ---------------------------------------------------------------------
+// Vehicles for rent
+// ---------------------------------------------------------------------
+function vehiclesTab(vehicles) {
+  return `
+    <section class="card">
+      <div class="card-head"><div><h2 class="section-title">Kereta untuk disewa</h2><p class="xs faint">Pelajar menempah ikut tarikh, membayar sewa + deposit melalui dompet. Deposit dipulangkan secara automatik selepas kereta dipulangkan.</p></div>
+        <button class="btn btn-primary" data-act="vehicleModal">${icon('plus')} Tambah kenderaan</button></div>
+      ${vehicles.length ? `<div class="table-wrap"><table class="table"><thead><tr><th></th><th>Kenderaan</th><th>Sewa / hari</th><th>Deposit</th><th>Aktif</th><th class="right">Tindakan</th></tr></thead><tbody>
+        ${vehicles.map((v) => `<tr>
+          <td style="width:60px"><div class="thumb sm">${v.image ? `<img src="${esc(v.image)}" alt="">` : '🚗'}</div></td>
+          <td><div class="bold">${esc(v.model)}</div><div class="xs muted">${esc(v.plate)} · ${v.seats} tempat duduk · ${v.transmission === 'AUTO' ? 'Auto' : 'Manual'}</div></td>
+          <td class="price">${rm(v.daily_rate)}</td>
+          <td class="small">${rm(v.deposit)}</td>
+          <td><label class="switch"><input type="checkbox" ${v.active ? 'checked' : ''} data-change="toggleVehicle" data-id="${v.id}"><span></span></label></td>
+          <td class="right nowrap">
+            <button class="btn btn-ghost btn-icon" data-act="vehicleModal" data-vehicle='${esc(JSON.stringify(v))}' aria-label="Sunting">${icon('edit')}</button>
+            <button class="btn btn-danger btn-icon" data-act="deleteVehicle" data-id="${v.id}" aria-label="Padam">${icon('trash')}</button>
+          </td></tr>`).join('')}
+      </tbody></table></div>` : emptyState('car', 'Tiada kenderaan', 'Ada kereta untuk disewa kepada pelajar? Tambah di sini dan ia akan muncul di halaman Sewa Kereta.', `<button class="btn btn-primary" data-act="vehicleModal">${icon('plus')} Tambah kenderaan</button>`)}
+    </section>`;
+}
+
+Object.assign(actions, {
+  vehicleModal(el) {
+    const v = el.dataset.vehicle ? JSON.parse(el.dataset.vehicle) : null;
+    openModal({
+      title: v ? 'Sunting kenderaan' : 'Tambah kenderaan',
+      body: `
+        <form id="vehicleForm" data-form="saveVehicle" data-id="${v?.id || ''}" class="stack">
+          <div class="grid-2">
+            <div class="field"><label>Model *</label><input class="input" name="model" required minlength="3" maxlength="80" value="${esc(v?.model || '')}" placeholder="Cth: Perodua Myvi 1.5 AV"></div>
+            <div class="field"><label>No. plat *</label><input class="input" name="plate" required maxlength="15" value="${esc(v?.plate || '')}" placeholder="ABC 1234"></div>
+            <div class="field"><label>Tempat duduk</label><input class="input" type="number" name="seats" min="1" max="15" value="${v?.seats || 5}"></div>
+            <div class="field"><label>Transmisi</label><select class="input" name="transmission"><option value="AUTO" ${v?.transmission !== 'MANUAL' ? 'selected' : ''}>Auto</option><option value="MANUAL" ${v?.transmission === 'MANUAL' ? 'selected' : ''}>Manual</option></select></div>
+            <div class="field"><label>Sewa sehari (RM) *</label><div class="input-prefix"><span>RM</span><input class="input" type="number" name="daily_rate" min="1" step="0.01" required value="${v ? senToInput(v.daily_rate) : ''}"></div></div>
+            <div class="field"><label>Deposit (RM)</label><div class="input-prefix"><span>RM</span><input class="input" type="number" name="deposit" min="0" step="0.01" value="${v ? senToInput(v.deposit) : '50.00'}"></div></div>
+          </div>
+          <div class="field"><label>Syarat & nota</label><textarea class="input" name="notes" maxlength="500" rows="2" placeholder="Cth: Pulangkan dengan minyak penuh. Lesen P tidak dibenarkan.">${esc(v?.notes || '')}</textarea></div>
+          ${imageField('image', v?.image, 'Gambar kenderaan')}
+          <label class="check"><input type="checkbox" name="active" ${!v || v.active ? 'checked' : ''}> Tersedia untuk disewa</label>
+        </form>`,
+      foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="vehicleForm">Simpan</button>`
+    });
+  },
+  async deleteVehicle(el) {
+    if (!(await confirmDialog('Padam kenderaan ini?', { danger: true, ok: 'Padam' }))) return;
+    await api('DELETE', `/api/seller/vehicles/${el.dataset.id}`);
+    toast('Kenderaan dipadam.', 'success');
+    refresh();
+  }
+});
+changes.toggleVehicle = async (el) => {
+  try { await api('PATCH', `/api/seller/vehicles/${el.dataset.id}`, { active: el.checked }); } catch (err) { el.checked = !el.checked; throw err; }
+};
+forms.saveVehicle = async (d, form) => {
+  const id = form.dataset.id;
+  const body = { model: d.model, plate: d.plate, seats: Number(d.seats), transmission: d.transmission, daily_rate: toSen(d.daily_rate), deposit: toSen(d.deposit || 0), notes: d.notes, image: d.image || null, active: d.active === 'on' };
+  await api(id ? 'PATCH' : 'POST', id ? `/api/seller/vehicles/${id}` : '/api/seller/vehicles', body);
+  closeOverlay();
+  toast('Kenderaan disimpan.', 'success');
+  refresh();
+};

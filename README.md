@@ -15,8 +15,16 @@ Semuanya berjalan pada pelayan anda sendiri.
 | **Chat** | Chat masa nyata antara pelajar dan peniaga (atau sokongan admin), dengan gambar, tanda "dibaca" dan status dalam talian. |
 | **Notifikasi** | Notifikasi dalam aplikasi untuk pesanan, dompet, kelulusan kedai dan mesej. |
 | **Pusat Peniaga** | Permohonan 3 langkah dengan yuran lesen yang dibayar dari dompet. Ada ringkasan jualan (graf 7 hari), urus pesanan masuk, menu (gambar, harga, tersedia/habis), profil kedai, pembaharuan lesen dan suis buka/tutup. |
+| **Halaman Utama (Hub)** | Carian global merentas semua modul, jubin pintasan untuk setiap perkhidmatan, serta senarai terkini barang terpakai, kedai popular, event dan bilik sewa. |
+| **Prebet & Trip** | Pemandu menyenaraikan laluan (harga seorang). Pelajar menempah dengan tarikh/masa, lokasi ambil, destinasi dan bilangan penumpang. |
+| **Sewa Kereta** | Kereta sewa harian dengan kadar, deposit dan syarat. Tarikh yang sudah ditempah ditunjukkan, tempahan bertindih disekat, dan deposit dipulangkan secara automatik selepas selesai. |
+| **Servis & Tutor** | Penyedia menetapkan hari & waktu tempahan. Pelajar memilih slot kosong (setiap 30 min) dan slot yang sama tidak boleh ditempah dua kali. |
+| **Barang Terpakai** | Jual beli antara pelajar tanpa lesen: kategori, keadaan barang, harga boleh runding, sehingga 5 gambar. Bayar dengan dompet (dilindungi) atau tunai semasa berjumpa. |
+| **Sewa Bilik** | Iklan bilik/rumah dengan jenis, jantina penyewa, kemudahan dan tarikh masuk. Yuran tempahan dalam talian adalah pilihan dan dipegang sehingga penyewa masuk. |
+| **Kerja Part-time · Event & Tiket · Hilang & Jumpa** | Iklan kerja (mohon melalui chat), event dengan tiket berbayar (stok dikurangkan secara automatik), dan papan barang hilang/dijumpai. |
+| **Iklan Saya** | Urus iklan (sunting, tanda terjual, tutup, padam) serta jualan dan tempahan yang masuk. |
 | **Laporan Masalah** | Pembeli boleh melaporkan masalah semasa wang masih dipegang. Wang dibekukan sehingga admin memutuskan sama ada pulangan penuh, lepaskan kepada peniaga, atau bahagikan. Lihat bahagian di bawah. |
-| **Panel Admin** | Lulus, tolak atau gantung kedai (yuran dipulangkan jika ditolak). Sahkan tambah nilai berserta resit, proses pengeluaran, urus pengguna (gantung, kredit tunai kaunter), serta tetapan pakej, komisen, akaun bank, kod QR dan pengumuman. |
+| **Panel Admin** | Urus kategori (tambah, namakan semula, nyahaktif), semak iklan yang dilaporkan (padam/pulihkan). Lulus, tolak atau gantung kedai (yuran dipulangkan jika ditolak). Sahkan tambah nilai berserta resit, proses pengeluaran, urus pengguna (gantung, kredit tunai kaunter), serta tetapan pakej, komisen, akaun bank, kod QR dan pengumuman. |
 | **UI** | Reka bentuk baharu dengan mod gelap, mudah digunakan di telefon (navigasi bawah, drawer), boleh dipasang sebagai aplikasi (PWA) dan sesuai untuk pembaca skrin. |
 
 ## Perlindungan pembeli: laporan masalah (pertikaian)
@@ -85,12 +93,14 @@ Akaun demo (apabila `DEMO=1`): `pelajar@demo.upsi`, `nasilemak@demo.upsi`, `preb
 
 ```
 server.js            pelayan HTTP, fail statik, sesi
-src/api.js           semua endpoint API & logik perniagaan (pesanan, dompet, chat, admin)
+src/api.js           endpoint teras: akaun, kedai, pesanan, dompet, chat, pertikaian, admin
+src/modules.js       modul one-stop centre: tempahan (trip, servis, sewa kereta), iklan, kategori, hub
+src/validate.js      pengesahan input bersama
 src/db.js            skema SQLite, tetapan lalai, data demo
 src/realtime.js      hab Server-Sent Events (chat/notifikasi masa nyata)
 src/security.js      hash kata laluan (scrypt), token, had kadar
 public/              aplikasi web (HTML/CSS/JS tanpa framework, ikon SVG sendiri)
-test/api.test.js     ujian integrasi
+test/                ujian integrasi (teras + modul)
 legacy/              versi asal satu-fail (rujukan)
 ```
 

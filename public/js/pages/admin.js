@@ -7,6 +7,8 @@ const TABS = [
   ['overview', 'Ringkasan', 'grid'],
   ['shops', 'Peniaga', 'store'],
   ['disputes', 'Pertikaian', 'alert'],
+  ['listings', 'Iklan', 'tag'],
+  ['categories', 'Kategori', 'grid'],
   ['topups', 'Tambah nilai', 'wallet'],
   ['withdrawals', 'Pengeluaran', 'bank'],
   ['users', 'Pengguna', 'users'],
@@ -18,8 +20,8 @@ page('/admin/:tab', ({ tab }, query) => adminPage(tab, query), { admin: true });
 
 async function adminPage(tab, query) {
   const ov = await api('GET', '/api/admin/overview');
-  const counts = { shops: ov.pending.shops, topups: ov.pending.topups, withdrawals: ov.pending.withdrawals, disputes: ov.pending.disputes };
-  const render = { overview, shops, disputes, topups, withdrawals, users, settings }[tab] || overview;
+  const counts = { shops: ov.pending.shops, topups: ov.pending.topups, withdrawals: ov.pending.withdrawals, disputes: ov.pending.disputes, listings: ov.pending.listings };
+  const render = { overview, shops, disputes, listings, categories, topups, withdrawals, users, settings }[tab] || overview;
   const content = await render(ov, query);
   return `
     <div class="stack">
@@ -40,8 +42,9 @@ function overview(ov) {
         ${stat('store', '', 'Peniaga aktif', ov.shops, `${ov.users} pengguna berdaftar`)}
         ${stat('wallet', 'amber', 'Baki dompet pengguna', rm(ov.float), 'Mesti sepadan dengan baki akaun bank platform')}
       </div>
-      <div class="grid-4">
+      <div class="grid-3">
         ${todo('alert', ov.pending.disputes, 'pertikaian terbuka', '#/admin/disputes')}
+        ${todo('flag', ov.pending.listings, 'iklan dilaporkan', '#/admin/listings')}
         ${todo('store', ov.pending.shops, 'permohonan kedai', '#/admin/shops')}
         ${todo('wallet', ov.pending.topups, 'tambah nilai menunggu', '#/admin/topups')}
         ${todo('bank', ov.pending.withdrawals, 'pengeluaran menunggu', '#/admin/withdrawals')}
@@ -49,7 +52,7 @@ function overview(ov) {
       <section class="card">
         <div class="card-head"><h2 class="section-title">Pesanan terkini</h2></div>
         ${ov.recent.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Kod</th><th>Kedai</th><th>Pembeli</th><th>Jumlah</th><th>Bayaran</th><th>Status</th><th>Masa</th></tr></thead><tbody>
-          ${ov.recent.map((o) => `<tr><td class="mono small">${esc(o.code)}</td><td>${esc(o.shop)}</td><td>${esc(o.buyer)}</td><td class="bold">${rm(o.total)}</td><td class="small">${o.payment === 'WALLET' ? 'Dompet' : 'Tunai'}</td><td>${statusBadge(o.status)}</td><td class="small faint">${fmtDateTime(o.created_at)}</td></tr>`).join('')}
+          ${ov.recent.map((o) => `<tr><td class="mono small"><a href="#/orders/${o.id}">${esc(o.code)}</a></td><td>${esc(o.shop)}</td><td>${esc(o.buyer)}</td><td class="bold">${rm(o.total)}</td><td class="small">${o.payment === 'WALLET' ? 'Dompet' : 'Tunai'}</td><td>${statusBadge(o.status)}</td><td class="small faint">${fmtDateTime(o.created_at)}</td></tr>`).join('')}
         </tbody></table></div>` : emptyState('receipt', 'Belum ada pesanan', 'Pesanan pertama akan muncul di sini.')}
       </section>
     </div>`;
@@ -117,6 +120,63 @@ async function disputes(_, query) {
               </div>` : `<div class="alert success small">${icon('checkCircle')}<div><b>${outcomeText(d)}</b> – ${esc(d.admin_note || '')}<div class="xs faint">${fmtDateTime(d.resolved_at)}</div></div></div>`}
           </section>`;
       }).join('') : `<div class="card">${emptyState('shield', 'Tiada pertikaian', status === 'OPEN' ? 'Tiada laporan masalah yang perlu disemak.' : 'Tiada rekod.')}</div>`}
+    </div>`;
+}
+
+async function listings(_, query) {
+  const f = query?.get('f') || 'reported';
+  const { listings: list } = await api('GET', `/api/admin/listings?f=${f}`);
+  const kinds = state.config.listing_kinds;
+  return `
+    <div class="stack">
+      <div class="chips">${[['reported', 'Dilaporkan'], ['all', 'Semua iklan'], ['removed', 'Dipadam']].map(([k, l]) => `<a class="chip ${f === k ? 'active' : ''}" href="#/admin/listings?f=${k}">${l}</a>`).join('')}</div>
+      ${list.length ? `<section class="card"><div class="table-wrap"><table class="table">
+        <thead><tr><th>Iklan</th><th>Jenis</th><th>Pemilik</th><th>Harga</th><th>Laporan</th><th>Status</th><th class="right">Tindakan</th></tr></thead>
+        <tbody>${list.map((l) => `
+          <tr>
+            <td><a class="bold" href="#/listing/${l.id}">${esc(l.title)}</a><div class="xs faint">${esc(l.location || l.campus)} · ${fmtDate(l.created_at)}</div></td>
+            <td class="small">${esc(kinds[l.kind])}</td>
+            <td class="small">${esc(l.owner.name)}</td>
+            <td class="small">${l.price != null ? rm(l.price) : '-'}</td>
+            <td>${l.reports ? `<span class="badge red">${l.reports}</span>` : '<span class="faint">0</span>'}</td>
+            <td>${statusBadge(l.status)}${l.removed_reason ? `<div class="xs faint">${esc(l.removed_reason)}</div>` : ''}</td>
+            <td class="right nowrap">
+              ${l.status === 'REMOVED' ? `<button class="btn btn-ghost btn-sm" data-act="listingMod" data-id="${l.id}" data-action="restore">Pulihkan</button>`
+                : `${l.reports ? `<button class="btn btn-ghost btn-sm" data-act="listingMod" data-id="${l.id}" data-action="dismiss">Abaikan laporan</button> ` : ''}<button class="btn btn-danger btn-sm" data-act="listingMod" data-id="${l.id}" data-action="remove">Padam</button>`}
+              <button class="btn btn-ghost btn-sm btn-icon" data-act="adminChat" data-user="${l.owner.id}" aria-label="Chat">${icon('chat')}</button>
+            </td>
+          </tr>`).join('')}</tbody>
+      </table></div></section>` : `<div class="card">${emptyState('tag', 'Tiada iklan', f === 'reported' ? 'Tiada iklan yang dilaporkan oleh pengguna.' : 'Tiada rekod.')}</div>`}
+    </div>`;
+}
+
+async function categories() {
+  const { categories: list } = await api('GET', '/api/admin/categories');
+  const section = (kind, title, hint) => `
+    <section class="card">
+      <div class="card-head"><div><h2 class="section-title">${title}</h2><p class="xs faint">${hint}</p></div></div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Emoji</th><th>Nama</th><th>Digunakan</th><th>Aktif</th><th class="right">Tindakan</th></tr></thead>
+        <tbody>${list.filter((c) => c.kind === kind).map((c) => `
+          <tr>
+            <td style="font-size:22px">${esc(c.emoji)}</td>
+            <td class="bold">${esc(c.name)}</td>
+            <td class="small">${c.used}</td>
+            <td><label class="switch"><input type="checkbox" ${c.active ? 'checked' : ''} data-change="toggleCategory" data-id="${c.id}"><span></span></label></td>
+            <td class="right"><button class="btn btn-ghost btn-icon" data-act="categoryModal" data-cat='${esc(JSON.stringify(c))}' aria-label="Sunting">${icon('edit')}</button></td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+      <form data-form="addCategory" data-kind="${kind}" class="row" style="padding:14px 20px;border-top:1px solid var(--border)">
+        <input class="input" name="emoji" maxlength="8" placeholder="😀" style="width:72px">
+        <input class="input grow" name="name" required minlength="2" maxlength="40" placeholder="Nama kategori baharu">
+        <button class="btn btn-primary" type="submit">${icon('plus')} Tambah</button>
+      </form>
+    </section>`;
+  return `
+    <div class="stack narrow" style="margin:0">
+      ${section('shop', 'Kategori kedai & servis', 'Dipilih oleh peniaga semasa mendaftar kedai. Nyahaktif untuk menyembunyikan daripada pilihan baharu.')}
+      ${section('market', 'Kategori barang terpakai', 'Digunakan untuk iklan jual beli antara pelajar.')}
+      <div class="alert info small">${icon('info')}<div>Menukar nama kategori turut mengemas kini semua kedai & iklan yang menggunakannya.</div></div>
     </div>`;
 }
 
@@ -301,6 +361,31 @@ Object.assign(actions, {
       foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="resolveForm">Sahkan keputusan</button>`
     });
   },
+  async listingMod(el) {
+    const { id, action } = el.dataset;
+    let reason = '';
+    if (action === 'remove') {
+      const ok = await confirmDialog('Padam iklan ini? Pemilik akan dimaklumkan.', { danger: true, input: 'Sebab (dimaklumkan kepada pemilik)', ok: 'Padam' });
+      if (!ok) return;
+      reason = ok.value || 'Melanggar syarat penggunaan';
+    }
+    await api('POST', `/api/admin/listings/${id}/${action}`, { reason });
+    toast('Iklan dikemas kini.', 'success');
+    refresh();
+  },
+  categoryModal(el) {
+    const c = JSON.parse(el.dataset.cat);
+    openModal({
+      title: 'Sunting kategori',
+      body: `<form id="catForm" data-form="saveCategory" data-id="${c.id}" class="stack">
+        <div class="row"><div class="field" style="width:90px"><label>Emoji</label><input class="input" name="emoji" maxlength="8" value="${esc(c.emoji)}"></div>
+        <div class="field grow"><label>Nama</label><input class="input" name="name" required minlength="2" maxlength="40" value="${esc(c.name)}"></div></div>
+        <div class="field"><label>Susunan</label><input class="input" type="number" name="sort" min="0" max="999" value="${c.sort}" style="max-width:120px"><span class="hint">Nombor kecil dipaparkan dahulu.</span></div>
+        ${c.used ? `<p class="xs faint">${c.used} kedai/iklan menggunakan kategori ini dan akan dikemas kini bersama.</p>` : ''}
+      </form>`,
+      foot: `<button class="btn btn-ghost" data-act="closeOverlay">Batal</button><button class="btn btn-primary" type="submit" form="catForm">Simpan</button>`
+    });
+  },
   async adminChat(el) {
     const { chat } = await api('POST', '/api/chats', { userId: Number(el.dataset.user) });
     location.hash = `#/chat/${chat.id}`;
@@ -313,7 +398,25 @@ changes.resolveOutcome = (el) => {
   split.querySelector('input').required = el.value === 'SPLIT';
 };
 
+changes.toggleCategory = async (el) => {
+  try { await api('PATCH', `/api/admin/categories/${el.dataset.id}`, { active: el.checked }); await refreshConfig(); } catch (err) { el.checked = !el.checked; throw err; }
+};
+async function refreshConfig() { Object.assign(state.config, await api('GET', '/api/config')); }
+
 Object.assign(forms, {
+  async addCategory(d, form) {
+    await api('POST', '/api/admin/categories', { kind: form.dataset.kind, name: d.name, emoji: d.emoji });
+    await refreshConfig();
+    toast('Kategori ditambah.', 'success');
+    refresh();
+  },
+  async saveCategory(d, form) {
+    await api('PATCH', `/api/admin/categories/${form.dataset.id}`, { name: d.name, emoji: d.emoji, sort: Number(d.sort) });
+    await refreshConfig();
+    closeOverlay();
+    toast('Kategori dikemas kini.', 'success');
+    refresh();
+  },
   async resolveDispute(data, form) {
     await api('POST', `/api/admin/disputes/${form.dataset.id}/resolve`, {
       outcome: data.outcome, note: data.note, refund: data.outcome === 'SPLIT' ? toSen(data.refund) : undefined
